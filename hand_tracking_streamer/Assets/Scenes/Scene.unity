@@ -251,6 +251,12 @@ MonoBehaviour:
     - m_Text: Right Hand
       m_Image: {fileID: 0}
       m_Color: {r: 1, g: 1, b: 1, a: 1}
+    - m_Text: Hands + Controllers
+      m_Image: {fileID: 0}
+      m_Color: {r: 1, g: 1, b: 1, a: 1}
+    - m_Text: Controllers Only
+      m_Image: {fileID: 0}
+      m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_OnValueChanged:
     m_PersistentCalls:
       m_Calls: []
@@ -10559,7 +10565,7 @@ MonoBehaviour:
   virtualGreenScreenApplyDepthCulling: 0
   virtualGreenScreenDepthTolerance: 0.2
   mrcActivationMode: 0
-  launchSimultaneousHandsControllersOnStartup: 0
+  launchSimultaneousHandsControllersOnStartup: 1
   isInsightPassthroughEnabled: 1
   shouldBoundaryVisibilityBeSuppressed: 0
   requestBodyTrackingPermissionOnStartup: 0
@@ -10577,7 +10583,7 @@ MonoBehaviour:
   LateControllerUpdate: 1
   LateLatching: 0
   controllerDrivenHandPosesType: 0
-  SimultaneousHandsAndControllersEnabled: 0
+  SimultaneousHandsAndControllersEnabled: 1
   _readOnlyWideMotionModeHandPosesEnabled: 0
   wideMotionModeHandPosesEnabled: 0
   dynamicResolutionVersion: 1
@@ -17398,7 +17404,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _handSide: 0
   _logToHUD: 1
-  _hudLogSource: Right
+  _hudLogSource: Left
   _frequency: 0.01
 --- !u!114 &1922402554
 MonoBehaviour:

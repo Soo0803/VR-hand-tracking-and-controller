@@ -36,6 +36,29 @@ public class AppManager : MonoBehaviour
     public Toggle headPoseToggle;
     public bool TrackHeadPose => headPoseToggle != null && headPoseToggle.isOn;
 
+    public Toggle controllerPoseToggle;
+    /// <summary>
+    /// Controllers stream when: mode is 3 (Hands+Controllers) or 4 (Controllers Only),
+    /// OR when the toggle is explicitly wired and on.
+    /// Modes: 0=Both Hands, 1=Left, 2=Right, 3=Hands+Controllers, 4=Controllers Only
+    /// </summary>
+    public bool TrackControllers
+    {
+        get
+        {
+            int mode = SelectedHandMode;
+            if (mode == 3 || mode == 4) return true;
+            // Fall back to toggle if wired
+            if (controllerPoseToggle != null) return controllerPoseToggle.isOn;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Hands stream for modes 0, 1, 2, 3 but NOT mode 4 (Controllers Only).
+    /// </summary>
+    public bool ShouldStreamHands => SelectedHandMode != 4;
+
     [Header("Interaction Settings")]
     public GameObject[] rayInteractors;
 
@@ -293,6 +316,9 @@ private void OnProtocolChanged(int index)
         UpdateHandVisuals(SelectedHandMode);
         isStreaming = true;
 
+        // Auto-create controller pose streamers at runtime if none exist in the scene
+        EnsureControllerStreamers();
+
         // Optional host->Quest video plane (separate from telemetry transport)
         if (ShowVideoStream)
         {
@@ -347,6 +373,7 @@ private void OnProtocolChanged(int index)
         
         // 1. Reset Logic
         isStreaming = false;
+        DestroyControllerStreamers();
         
         // 2. Re-enable UI
         if (menuPanel != null) 
@@ -371,6 +398,7 @@ private void OnProtocolChanged(int index)
     {
         isStreaming = false;
         ClearError();
+        DestroyControllerStreamers();
         StopVideoSessionAsync("user_stop");
         ApplyVideoCanvasVisibility();
 
@@ -404,8 +432,9 @@ private void OnProtocolChanged(int index)
 
     private void UpdateHandVisuals(int mode)
     {
-        bool showLeft = (mode == 0 || mode == 1);
-        bool showRight = (mode == 0 || mode == 2);
+        // Modes 0-3 show hands; mode 4 (Controllers Only) hides hands
+        bool showLeft = (mode == 0 || mode == 1 || mode == 3);
+        bool showRight = (mode == 0 || mode == 2 || mode == 3);
 
         if (syntheticHandLeft != null) syntheticHandLeft.SetActive(showLeft);
         if (syntheticHandRight != null) syntheticHandRight.SetActive(showRight);
@@ -417,6 +446,81 @@ private void OnProtocolChanged(int index)
         foreach (var ray in rayInteractors)
         {
             if (ray != null) ray.SetActive(state);
+        }
+    }
+
+    // ─────────────────────────  CONTROLLER AUTO-SETUP  ─────────────────────────
+
+    /// <summary>
+    /// Dynamically creates ControllerPoseStreamer GameObjects at runtime if none
+    /// exist in the scene. This eliminates the need for manual Unity Editor setup.
+    /// </summary>
+    private void EnsureControllerStreamers()
+    {
+        if (!TrackControllers) return;
+
+        var existing = FindObjectsByType<ControllerPoseStreamer>(FindObjectsSortMode.None);
+        bool hasLeft = false, hasRight = false;
+        foreach (var s in existing)
+        {
+            if (s.Side == ControllerPoseStreamer.ControllerSide.Left) hasLeft = true;
+            if (s.Side == ControllerPoseStreamer.ControllerSide.Right) hasRight = true;
+        }
+
+        // Find axis prefab from an existing HandLandmarkVisualizer (already in the scene)
+        GameObject axisPrefab = null;
+        var handVis = FindFirstObjectByType<HandLandmarkVisualizer>();
+        if (handVis != null)
+        {
+            // Use reflection-free approach: load from Resources
+            axisPrefab = Resources.Load<GameObject>("Axis_Gizmo");
+        }
+        // Fallback: try loading directly
+        if (axisPrefab == null)
+        {
+            axisPrefab = Resources.Load<GameObject>("Axis_Gizmo");
+        }
+
+        if (!hasLeft)
+        {
+            var go = new GameObject("LeftControllerStreamer");
+            var cs = go.AddComponent<ControllerPoseStreamer>();
+            cs.SetSide(ControllerPoseStreamer.ControllerSide.Left);
+
+            if (axisPrefab != null)
+            {
+                var vis = go.AddComponent<ControllerLandmarkVisualizer>();
+                vis.Init(cs, axisPrefab);
+            }
+
+            Debug.Log("[AppManager] Auto-created Left ControllerPoseStreamer");
+        }
+
+        if (!hasRight)
+        {
+            var go = new GameObject("RightControllerStreamer");
+            var cs = go.AddComponent<ControllerPoseStreamer>();
+            cs.SetSide(ControllerPoseStreamer.ControllerSide.Right);
+
+            if (axisPrefab != null)
+            {
+                var vis = go.AddComponent<ControllerLandmarkVisualizer>();
+                vis.Init(cs, axisPrefab);
+            }
+
+            Debug.Log("[AppManager] Auto-created Right ControllerPoseStreamer");
+        }
+    }
+
+    /// <summary>
+    /// Destroy auto-created controller streamer GameObjects when streaming stops.
+    /// </summary>
+    private void DestroyControllerStreamers()
+    {
+        var existing = FindObjectsByType<ControllerPoseStreamer>(FindObjectsSortMode.None);
+        foreach (var s in existing)
+        {
+            Destroy(s.gameObject);
         }
     }
 

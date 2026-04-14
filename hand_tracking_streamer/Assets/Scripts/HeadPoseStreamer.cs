@@ -105,7 +105,7 @@ public class HeadPoseStreamer : MonoBehaviour
             _sbLog.AppendLine("=== [Head] Pose ===");
             _sbLog.Append("Pos: ").AppendLine(FormatVector3Tuple(position));
             _sbLog.Append("Rot: ").AppendLine(FormatQuaternionTuple(rotation));
-            LogHUD(_sbLog.ToString());
+            LogHUDSlot("head", _sbLog.ToString());
         }
 
         SendData(_sbPacket.ToString());
@@ -262,6 +262,14 @@ public class HeadPoseStreamer : MonoBehaviour
         if (logToHUD && LogManager.Instance != null)
         {
             LogManager.Instance.Log(hudLogSource, msg);
+        }
+    }
+
+    private void LogHUDSlot(string slotKey, string msg)
+    {
+        if (logToHUD && LogManager.Instance != null)
+        {
+            LogManager.Instance.LogSlot(hudLogSource, slotKey, msg);
         }
     }
 }

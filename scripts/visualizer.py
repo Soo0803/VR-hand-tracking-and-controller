@@ -156,18 +156,54 @@ class HandState:
         return self.wrist_position
 
 
+@dataclass
+class ControllerState:
+    """State for a single Quest controller."""
+
+    side: str
+    is_tracked: bool = False
+    position: Optional[np.ndarray] = None
+    rotation_quat: Optional[np.ndarray] = None
+    forward: Optional[np.ndarray] = None
+    up: Optional[np.ndarray] = None
+    right: Optional[np.ndarray] = None
+    last_update: float = field(default_factory=time.monotonic)
+
+    def update(self, data: Iterable[float]) -> None:
+        """Update from a flat float sequence: tracked, px,py,pz, qx,qy,qz,qw, fx,fy,fz, ux,uy,uz, rx,ry,rz."""
+        values = list(data)
+        if len(values) < 8:  # minimum: tracked + pos + quat
+            return
+        self.is_tracked = values[0] >= 0.5
+        self.position = _convert_vec(np.array(values[1:4], dtype=float))
+        self.rotation_quat = _convert_quat(np.array(values[4:8], dtype=float))
+        if len(values) >= 17:
+            self.forward = _convert_vec(np.array(values[8:11], dtype=float))
+            self.up = _convert_vec(np.array(values[11:14], dtype=float))
+            self.right = _convert_vec(np.array(values[14:17], dtype=float))
+        self.last_update = time.monotonic()
+
+
 def _parse_line(line: str) -> Optional[Tuple[str, str, Tuple[float, ...]]]:
-    """Parse a CSV line into (side, kind, floats)."""
+    """Parse a CSV line into (side, kind, floats).
+
+    Recognized kinds: 'wrist', 'landmarks', 'controller'.
+    """
     parts = [part.strip() for part in line.split(",")]
     if not parts:
         return None
     label = parts[0].lower()
-    if "wrist" not in label and "landmarks" not in label:
+    if "wrist" not in label and "landmarks" not in label and "controller" not in label:
         return None
     side = "right" if "right" in label else "left" if "left" in label else ""
     if not side:
         return None
-    kind = "wrist" if "wrist" in label else "landmarks"
+    if "controller" in label:
+        kind = "controller"
+    elif "wrist" in label:
+        kind = "wrist"
+    else:
+        kind = "landmarks"
     floats = []
     for part in parts[1:]:
         if not part:
@@ -189,6 +225,10 @@ class StreamReceiver:
         self.hands: Dict[str, HandState] = {
             "right": HandState("right"),
             "left": HandState("left"),
+        }
+        self.controllers: Dict[str, ControllerState] = {
+            "right": ControllerState("right"),
+            "left": ControllerState("left"),
         }
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -212,11 +252,14 @@ class StreamReceiver:
         if not parsed:
             return
         side, kind, floats = parsed
-        hand = self.hands[side]
-        if kind == "wrist":
-            hand.update_wrist(floats)
-        elif kind == "landmarks":
-            hand.update_landmarks(floats)
+        if kind == "controller":
+            self.controllers[side].update(floats)
+        else:
+            hand = self.hands[side]
+            if kind == "wrist":
+                hand.update_wrist(floats)
+            elif kind == "landmarks":
+                hand.update_landmarks(floats)
 
     def _run_udp(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -365,6 +408,35 @@ def _update_finger_lines(lines: list, segments) -> None:
         line.set_3d_properties([start[2], end[2]])
 
 
+def _draw_controller_arrows(
+    ax: plt.Axes, state: "ControllerState", arrow_len: float = 0.12
+) -> list:
+    """Draw orientation arrows for a controller and return the artist list."""
+    artists = []
+    if state.position is None or not state.is_tracked:
+        return artists
+    pos = state.position
+    colors_dirs = []
+    if state.forward is not None:
+        colors_dirs.append(("#FF4444", state.forward))  # red = forward
+    if state.up is not None:
+        colors_dirs.append(("#44FF44", state.up))  # green = up
+    if state.right is not None:
+        colors_dirs.append(("#4444FF", state.right))  # blue = right
+    for color, direction in colors_dirs:
+        a = ax.quiver(
+            pos[0], pos[1], pos[2],
+            direction[0] * arrow_len,
+            direction[1] * arrow_len,
+            direction[2] * arrow_len,
+            color=color,
+            arrow_length_ratio=0.2,
+            linewidth=2.5,
+        )
+        artists.append(a)
+    return artists
+
+
 def run_visualizer(
     protocol: str,
     host: str,
@@ -374,6 +446,7 @@ def run_visualizer(
     axis_limit: float,
     alpha: float,
     show_fingers: bool,
+    show_controllers: bool = False,
 ) -> None:
     """Run the matplotlib visualizer."""
     receiver = StreamReceiver(protocol=protocol, host=host, port=port)
@@ -399,6 +472,14 @@ def run_visualizer(
 
     right_lines = _init_finger_lines(ax, color="#FFE692") if show_fingers else []
     left_lines = _init_finger_lines(ax, color="#94FFDF") if show_fingers else []
+
+    # Controller markers (diamond shape)
+    right_ctrl = ax.scatter([], [], [], c="#FF8C00", s=80, marker="D", label="R Ctrl") if show_controllers else None
+    left_ctrl = ax.scatter([], [], [], c="#1E90FF", s=80, marker="D", label="L Ctrl") if show_controllers else None
+    ctrl_arrow_artists: list = []  # quiver artists from previous frame
+
+    if show_controllers:
+        ax.legend(loc="upper right")
 
     plt.show(block=False)
 
@@ -456,6 +537,34 @@ def run_visualizer(
                 ):
                     segments = _finger_segments(left_wrist_point, left_points)
                     _update_finger_lines(left_lines, segments)
+
+            # ── Controllers ──
+            if show_controllers:
+                # Remove previous frame's arrow artists
+                for a in ctrl_arrow_artists:
+                    try:
+                        a.remove()
+                    except Exception:
+                        pass
+                ctrl_arrow_artists.clear()
+
+                r_ctrl_state = receiver.controllers["right"]
+                if r_ctrl_state.position is not None and r_ctrl_state.is_tracked and right_ctrl is not None:
+                    right_ctrl._offsets3d = (
+                        [r_ctrl_state.position[0]],
+                        [r_ctrl_state.position[1]],
+                        [r_ctrl_state.position[2]],
+                    )
+                    ctrl_arrow_artists.extend(_draw_controller_arrows(ax, r_ctrl_state))
+
+                l_ctrl_state = receiver.controllers["left"]
+                if l_ctrl_state.position is not None and l_ctrl_state.is_tracked and left_ctrl is not None:
+                    left_ctrl._offsets3d = (
+                        [l_ctrl_state.position[0]],
+                        [l_ctrl_state.position[1]],
+                        [l_ctrl_state.position[2]],
+                    )
+                    ctrl_arrow_artists.extend(_draw_controller_arrows(ax, l_ctrl_state))
 
             points_for_bounds = []
             if cached_right_points is not None:
@@ -536,6 +645,11 @@ def main() -> None:
         action="store_true",
         help="Render finger bone lines.",
     )
+    parser.add_argument(
+        "--show-controllers",
+        action="store_true",
+        help="Render Quest controller pose markers and orientation arrows.",
+    )
     args = parser.parse_args()
 
     if args.left_only and args.right_only:
@@ -558,6 +672,7 @@ def main() -> None:
         axis_limit=args.axis_limit,
         alpha=args.alpha,
         show_fingers=args.show_fingers,
+        show_controllers=args.show_controllers,
     )
 
 

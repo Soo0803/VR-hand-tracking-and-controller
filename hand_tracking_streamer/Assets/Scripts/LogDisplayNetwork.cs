@@ -25,13 +25,22 @@ public class LogDisplayNetwork : MonoBehaviour
             return;
         }
 
-        var logMessages = LogManager.Instance.GetLogMessages(logSource);
-        int startIdx = Mathf.Max(0, logMessages.Count - maxDisplayedMessages);
+        var legacyMessages = LogManager.Instance.GetLogMessages(logSource);
+        var slotMessages = LogManager.Instance.GetSlotMessages(logSource);
+
         _sb.Clear();
-        for (int i = startIdx; i < logMessages.Count; i++)
+        
+        int startIdx = Mathf.Max(0, legacyMessages.Count - maxDisplayedMessages);
+        for (int i = startIdx; i < legacyMessages.Count; i++)
         {
-            _sb.AppendLine(logMessages[i]);
+            _sb.AppendLine(legacyMessages[i]);
         }
+
+        for (int i = 0; i < slotMessages.Count; i++)
+        {
+            _sb.AppendLine(slotMessages[i]);
+        }
+
         SetText(_sb.ToString());
     }
 

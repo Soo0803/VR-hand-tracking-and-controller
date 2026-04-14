@@ -42,7 +42,13 @@ public class HandLandmarkVisualizer : MonoBehaviour
         }
 
         // Check if this hand should even be active based on AppManager selection
+        // Modes: 0=Both, 1=Left, 2=Right, 3=Hands+Controllers, 4=Controllers Only
         int mode = AppManager.Instance.SelectedHandMode;
+        if (mode == 4) // Controllers Only — hide all hand landmarks
+        {
+            ToggleAllVisualizers(false);
+            return;
+        }
         if ((mode == 1 && _streamer.Side == HandLandmarkStreamer.HandSide.Right) ||
             (mode == 2 && _streamer.Side == HandLandmarkStreamer.HandSide.Left))
         {
