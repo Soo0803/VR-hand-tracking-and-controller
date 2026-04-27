@@ -88,8 +88,8 @@ def _parse_line(line: str, receiver: Receiver) -> Optional[str]:
         receiver.fist_state = 1.0 if state == "closed" else 0.0
         return "fist"
 
-    # Handle Controller or Hand Tracking (Wrist) updates
-    if "controller" not in header and "wrist" not in header:
+    # Handle Controller, Hand Tracking (Wrist), or Head Updates
+    if "controller" not in header and "wrist" not in header and "head" not in header:
         return None
 
     side = "right" if "right" in header else "left" if "left" in header else None
@@ -211,15 +211,15 @@ class Receiver:
                 logging.error("TCP Server error: %s", e)
         server.close()
 
-def run_bridge(in_protocol, in_port, out_port, verbose=False):
+def run_bridge(in_protocol, in_port, out_host, out_port, verbose=False):
     receiver = Receiver(in_protocol, "0.0.0.0", in_port)
     t = threading.Thread(target=receiver.run, daemon=True)
     t.start()
 
     out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    out_addr = ("127.0.0.1", out_port)
+    out_addr = (out_host, out_port)
 
-    logging.info("Bridge started. Forwarding to UDP %d", out_port)
+    logging.info("Bridge started. Forwarding to UDP %s:%d", out_host, out_port)
     
     try:
         while True:
@@ -253,12 +253,13 @@ def main():
     parser = argparse.ArgumentParser(description="Quest to ManiSkill Bridge")
     parser.add_argument("--in-protocol", choices=["tcp", "udp"], default="tcp")
     parser.add_argument("--in-port", type=int, default=8000)
+    parser.add_argument("--out-host", type=str, default="127.0.0.1", help="Target IP address for UDP output")
     parser.add_argument("--out-port", type=int, default=9876)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run_bridge(args.in_protocol, args.in_port, args.out_port, args.verbose)
+    run_bridge(args.in_protocol, args.in_port, args.out_host, args.out_port, args.verbose)
 
 if __name__ == "__main__":
     main()
