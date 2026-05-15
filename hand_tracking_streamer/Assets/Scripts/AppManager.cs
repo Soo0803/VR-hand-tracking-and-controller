@@ -98,14 +98,69 @@ public class AppManager : MonoBehaviour
         if (protocolDropdown != null)
         {
             protocolDropdown.onValueChanged.AddListener(OnProtocolChanged);
-            // OnProtocolChanged(protocolDropdown.value);
         }
+
+        // --- NEW: Repair Hand Dropdown at Runtime ---
+        RepairHandDropdown();
+
+        // --- NEW: Auto-Link OVR Rig if references are missing ---
+        AutoLinkRig();
 
         ipInputField.onValueChanged.AddListener(delegate { ClearError(); });
         portInputField.onValueChanged.AddListener(delegate { ClearError(); });
         // Load saved config (if any)
         LoadConfig();
         ApplyVideoCanvasVisibility();
+    }
+
+    private void AutoLinkRig()
+    {
+        // If we already have links, don't override them
+        if (syntheticHandLeft != null && syntheticHandRight != null) return;
+
+        Debug.Log("[AppManager] Attempting to Auto-Link Rig...");
+
+        // 1. Find OVRCameraRig or OVRManager
+        GameObject rig = GameObject.Find("OVRCameraRig");
+        if (rig == null) rig = GameObject.Find("[BuildingBlock] Camera Rig"); // Fallback for building blocks
+        if (rig == null)
+        {
+            var mgr = FindObjectOfType<OVRManager>();
+            if (mgr != null) rig = mgr.gameObject;
+        }
+
+        if (rig == null)
+        {
+            Debug.LogWarning("[AppManager] No Camera Rig found in scene to Auto-Link.");
+            return;
+        }
+
+        // 2. Find Hands (Synthetic Hands)
+        if (syntheticHandLeft == null) syntheticHandLeft = FindChildRecursive(rig, "LeftHandSynthetic") ?? FindChildRecursive(rig, "LeftHand");
+        if (syntheticHandRight == null) syntheticHandRight = FindChildRecursive(rig, "RightHandSynthetic") ?? FindChildRecursive(rig, "RightHand");
+
+        // 3. Find Ray Interactors
+        if (rayInteractors == null || rayInteractors.Length < 2 || rayInteractors[0] == null)
+        {
+            GameObject lRay = FindChildRecursive(rig, "LeftHandRayInteractor") ?? FindChildRecursive(rig, "LeftRay");
+            GameObject rRay = FindChildRecursive(rig, "RightHandRayInteractor") ?? FindChildRecursive(rig, "RightRay");
+            
+            if (lRay != null && rRay != null)
+            {
+                rayInteractors = new GameObject[] { lRay, rRay };
+            }
+        }
+
+        Debug.Log($"[AppManager] Auto-Link Complete. L-Hand: {syntheticHandLeft != null}, R-Hand: {syntheticHandRight != null}");
+    }
+
+    private GameObject FindChildRecursive(GameObject parent, string name)
+    {
+        foreach (Transform child in parent.GetComponentsInChildren<Transform>(true))
+        {
+            if (child.name.Contains(name)) return child.gameObject;
+        }
+        return null;
     }
 
     private void SaveConfig()
@@ -148,6 +203,24 @@ public class AppManager : MonoBehaviour
         {
             handDropdown.value = PlayerPrefs.GetInt("SavedHandMode");
         }
+    }
+
+    private void RepairHandDropdown()
+    {
+        if (handDropdown == null) return;
+
+        // Ensure we have all 5 modes (0: Both Hands, 1: Left, 2: Right, 3: Hands+Controllers, 4: Controllers Only)
+        // This fixes compatibility with older scenes.
+        string[] requiredLabels = { "Both Hands", "Left Hand Only", "Right Hand Only", "Hands + Controllers", "Controllers Only" };
+        
+        // Clear and rebuild to ensure indexing is consistent with AppManager logic
+        handDropdown.ClearOptions();
+        var options = new System.Collections.Generic.List<TMP_Dropdown.OptionData>();
+        foreach (var label in requiredLabels)
+        {
+            options.Add(new TMP_Dropdown.OptionData(label));
+        }
+        handDropdown.AddOptions(options);
     }
 
     private void Update()
@@ -328,7 +401,7 @@ private void OnProtocolChanged(int index)
                 return;
             }
 
-            VideoStreamManager manager = FindFirstObjectByType<VideoStreamManager>();
+            VideoStreamManager manager = FindObjectOfType<VideoStreamManager>();
             if (manager == null)
             {
                 HandleDisconnection("Video manager missing from scene.");
@@ -381,7 +454,7 @@ private void OnProtocolChanged(int index)
             menuPanel.SetActive(true);
             
             // Optional: Recenter menu in front of user so they see the error
-            MenuRecenter recenter = FindFirstObjectByType<MenuRecenter>();
+            MenuRecenter recenter = FindObjectOfType<MenuRecenter>();
             if (recenter != null) recenter.Recenter();
         }
         ToggleRays(true);
@@ -406,7 +479,7 @@ private void OnProtocolChanged(int index)
         if (menuPanel != null) 
         {
             menuPanel.SetActive(true);
-            MenuRecenter recenterScript = FindFirstObjectByType<MenuRecenter>();
+            MenuRecenter recenterScript = FindObjectOfType<MenuRecenter>();
             if (recenterScript != null) recenterScript.Recenter();
         }
         ToggleRays(true);
@@ -416,7 +489,7 @@ private void OnProtocolChanged(int index)
 
     private async void StopVideoSessionAsync(string reason)
     {
-        VideoStreamManager manager = FindFirstObjectByType<VideoStreamManager>();
+        VideoStreamManager manager = FindObjectOfType<VideoStreamManager>();
         if (manager != null)
         {
             try
@@ -459,7 +532,7 @@ private void OnProtocolChanged(int index)
     {
         if (!TrackControllers) return;
 
-        var existing = FindObjectsByType<ControllerPoseStreamer>(FindObjectsSortMode.None);
+        var existing = FindObjectsOfType<ControllerPoseStreamer>();
         bool hasLeft = false, hasRight = false;
         foreach (var s in existing)
         {
@@ -469,7 +542,7 @@ private void OnProtocolChanged(int index)
 
         // Find axis prefab from an existing HandLandmarkVisualizer (already in the scene)
         GameObject axisPrefab = null;
-        var handVis = FindFirstObjectByType<HandLandmarkVisualizer>();
+        var handVis = FindObjectOfType<HandLandmarkVisualizer>();
         if (handVis != null)
         {
             // Use reflection-free approach: load from Resources
@@ -510,6 +583,13 @@ private void OnProtocolChanged(int index)
 
             Debug.Log("[AppManager] Auto-created Right ControllerPoseStreamer");
         }
+
+        EnsureHandAnchors();
+    }
+
+    private void EnsureHandAnchors()
+    {
+        // SideAnchors removed to allow world-space tracking of gizmos
     }
 
     /// <summary>
@@ -517,7 +597,7 @@ private void OnProtocolChanged(int index)
     /// </summary>
     private void DestroyControllerStreamers()
     {
-        var existing = FindObjectsByType<ControllerPoseStreamer>(FindObjectsSortMode.None);
+        var existing = FindObjectsOfType<ControllerPoseStreamer>();
         foreach (var s in existing)
         {
             Destroy(s.gameObject);
@@ -534,7 +614,7 @@ private void OnProtocolChanged(int index)
 
     private void ApplyVideoCanvasVisibility()
     {
-        VideoStreamManager manager = FindFirstObjectByType<VideoStreamManager>();
+        VideoStreamManager manager = FindObjectOfType<VideoStreamManager>();
         if (manager == null)
         {
             return;

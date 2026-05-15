@@ -30,10 +30,10 @@ public class LeftHandFistDetector : MonoBehaviour
     private bool _broadcastUDP = true;
     
     [SerializeField]
-    private string _remoteIP = "255.255.255.255"; // Broadcast address
+    private string _remoteIP = "127.0.0.1"; // Localhost for adb reverse
     
     [SerializeField]
-    private int _remotePort = 9000; // Port to send data to
+    private int _remotePort = 8000; // Match the bridge listening port
     
     private IHand _hand;
     private float _timer = 0f;

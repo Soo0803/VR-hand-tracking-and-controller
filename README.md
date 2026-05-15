@@ -1,159 +1,316 @@
-<div align="center">
-<img width="1224" height="500" alt="HTS logo" src="https://github.com/user-attachments/assets/7408e771-432e-435f-8f6e-d68656205a37" />
-<h3 align="center">
-    Meta Quest VR App for tracking and streaming hand and wrist landmark telemetry.
-  </h3>
-</div>
-<p align="center">
+# Hand Tracking Streamer - ManiSkill Bridge
 
-  <a href="https://www.meta.com/experiences/hand-tracking-streamer/26303946202523164/">
-   <img src="https://img.shields.io/badge/download-Meta_Quest_Store-FF5757?labelColor=grey" alt="Horizon Store Release">
-  </a>
+Meta Quest hand/controller telemetry for teleoperating a Franka arm in ManiSkill.
 
-  <a href="https://github.com/wengmister/hand-tracking-streamer/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache%20License%202.0-yellow.svg" alt="Apache 2.0">
-  </a>
+This repository adapts the original Hand Tracking Streamer Unity app into a robotics
+teleoperation pipeline. The Quest headset streams hand, wrist, controller, and optional
+head pose data to a host machine. The Python bridge scripts then convert Unity
+left-handed coordinate data into the right-handed, Z-up frame expected by the ManiSkill
+Franka teleoperation stack and forward compact binary UDP packets to the simulator.
 
-  <a href="https://zenodo.org/records/18601332">
-    <img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18601332-blue.svg" alt="Zenodo DOI">
-  </a>
+The current branch is intended for ManiSkill simulation. A real Franka/FR3 hardware
+bridge uses a different robot-frame mapping and should be kept separate from this
+simulation-oriented bridge.
 
-  <a href="https://github.com/wengmister/hand-tracking-sdk">
-    <img src="https://img.shields.io/badge/SDK-Python-green?labelColor=grey" alt="Python SDK">
-  </a>
-</p>
+## Two teleoperation option: hand tracking teleoperation, and controller tracking teleoperation
 
-**Hand Tracking Streamer** is a lightweight hand telemetry utility that turns a Meta Quest headset into a precision controller for robotics teleoperation and motion capture. Built on the Meta Interaction SDK, it streams 21-landmark hand data and 6-DoF wrist pose to a PC in real time over Wi-Fi using UDP for ultra-low latency or TCP for reliable data logging. The app supports left, right, or dual-hand modes with in-headset configuration, and includes a live log console and phantom hand visualization for debugging. Data is sent as structured packets of joint positions and orientations in Unity world space, making it suitable for robot control, imitation learning, and gesture-based prototyping.
+There are two host-side ManiSkill bridge scripts. Choose the script that matches the
+tracking mode selected inside the Meta Quest app:
 
+| Quest app tracking mode | Python bridge to run | Default output port | Use this for |
+| --- | --- | --- | --- |
+| Hand tracking / hand landmarks | `scripts/hand_bridge.py` | `9877` | Wrist pose plus 21 hand landmarks converted into wrist pose and finger curl values |
+| Controller tracking / Quest controllers | `scripts/controller_bridge.py` | `9876` | Left/right Quest controller pose and optional trigger/grasp signal |
 
-### What's New!
+If the Quest app is set to a hand mode such as `Both Hands`, `Left Hand Only`, or
+`Right Hand Only`, run `hand_bridge.py`. 
+If the Quest app is set to `Controllers Only`, or you are using controller pose teleoperation, run `controller_bridge.py`.
 
-<details>
-<summary>Click to expand changelog</summary>
+## What This Project Is For
 
+- Use a Meta Quest headset as a low-latency teleoperation input device.
+- Stream OpenXR hand landmarks and wrist poses over TCP or UDP.
+- Convert hand landmark motion into per-finger curl values for gripper or dexterous
+  control experiments.
+- Forward Quest controller poses as Franka end-effector commands for ManiSkill.
+- Prototype virtual Franka teleoperation before moving to real robot hardware.
 
-v1.1.0:
+## Steps to start the teleoperation and simulation
 
- - Added video streaming from host 
- - Added head tracking frame 
- - Added debug info for frame header and HUD display 
- - Now uses numerical keyboard for IP and Port input 
- - HUD now uses TMP to improve readability
+Terminal 1, start ManiSkill teleoperation so it listens on the expected UDP port.
 
-![immersive_sim_sm](https://github.com/user-attachments/assets/f77df332-ad51-4f36-aca7-a646c4a17d73)
+Terminal 2, start the bridge:
 
-
-v1.0.4:
-- Added wireless TCP connection
-  - This performs more consistently than wireless UDP and is not affected by batching
-  - Now gracefully handles TCP connection interruption
-- Enabled menu button to pause and evoke main menu during streaming
-- Added network status indication on main menu
-- Now loads last used connection config automatically on start up
-
-v1.0.3:
-- Added landmark visualization for tracked hands
-
-![visualize_landmark](https://github.com/user-attachments/assets/35656d86-02eb-45ec-bb9b-7b4f4cdd3c83)
-
-- Adjusted panel menu to include visualization toggle
-- Fixed the issue where index of little finger were shifted by one
-
-v1.0.2:
-- Improved panel menu text readability
-- Hand tracking frequency is now set to MAX
-
-v1.0.1:
-- Fixed the issue where sometimes panel menu would spawn on the floor
-- Fixed missing splash screen
-
-v1.0.0:
-- Added in-app menu to allow streaming configurations:
-  - Network protocol
-  - IP Address
-  - Port number
-  - Hand side
-
-- Added full bimanual tracking.
-- Added synthetic hand visualization on tracked hands.
-- Now available on SideQuest.
-
-</details>
-
-
-## Deployment
-
-### AppStore Available
-
-You can download the app from [Meta Quest Store](https://www.meta.com/experiences/hand-tracking-streamer/26303946202523164), or sideload the app with [SideQuest](https://sidequestvr.com/app/46236/hand-tracking-streamer) for free.
-
-### Local Builds
-
-Alternatively, you can build from source by loading `hand_tracking_streamer` project in [Unity](https://unity.com/download) or directly upload `hand_tracking_streamer.apk` via ADB to your device.
-
->[!NOTE]
->Before direct upload, make sure your device is set to [developer mode](https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/), and allow USB connection. This app is built and tested on Unity 6000.0.65f1
-
-## Data Streaming
-
-See [CONNECTIONS](CONNECTIONS.md) page for detailed documentation on connections and data format. 
-
-### Quick Start
-Not ready to integrate into your system yet? Check out the simple socket and the visualizer script provided under [/scripts](/scripts) for quickly testing data streamed from your device.
-
-<details>
-<summary>Click to see visualizer in action</summary>
-
-Install dependencies, connect HTS, and simply run:
-
-```python
-python ./scripts/visualizer.py --protocol [YOUR PROTOCOL] --host [YOUR HOST IP] --port [YOUR PORT] --show-fingers
-```
-    
-![visualizer](https://github.com/user-attachments/assets/431c994a-9287-4641-acb3-22e96c83b925)
-
-</details>
-
-## Python SDK
-
-For integrating HTS data into your own pipelines, use the official [Python SDK](https://github.com/wengmister/hand-tracking-sdk). It provides typed data structures, parsers for the HTS packet format, and utilities for real-time visualization and logging, so you can go from streamed packets to usable hand pose data quickly. The package is published on [PyPI](https://pypi.org/project/hand-tracking-sdk/); see the [documentation](https://hand-tracking-sdk.readthedocs.io/en/latest/) for API details and examples.
+Before running the bash command below, make sure that you have allow the cable connection to allow data connection from the VR to the PC by enabling it on the Meta Quest VR headset screen 
 
 ```bash
-# if using uv
-uv add hand-tracking-sdk
-
-# or install via pip
-pip install hand-tracking-sdk
+adb reverse tcp:8000 tcp:8000
+python3 scripts/hand_bridge.py --in-protocol tcp --in-port 8000 --out-port 9877 --verbose
 ```
 
-## Demo
+In the Quest app:
 
-### landmark visualization
-<img src="https://github.com/user-attachments/assets/3686b1bc-07d2-4517-bcc0-bbecb382df78" width="500"><br>
+1. Select `TCP Wired`.
+2. Set IP to `127.0.0.1`.
+3. Set port to `8000`.
+4. Select `Both Hands` or `Controller` mode on the option.
+5. Press Start.
 
-### immersive simulation
-<img src="https://github.com/user-attachments/assets/cc435e28-08a7-4f6c-8a25-6a36530657a2" width="500"><br>
+If packets are flowing, the bridge logs tracked hands and curl values, and ManiSkill
+receives binary UDP packets on `127.0.0.1:9877` at the log output on the bridge.py terminal
 
-### dexterous retargeting
-<img src="https://github.com/user-attachments/assets/bcbbbfcc-f3f8-4f73-883c-ea7acac19d03" width="500">    
+## System Overview
 
-Find more examples in SDK [here](https://github.com/wengmister/hand-tracking-sdk/tree/main/examples)
+```text
+Meta Quest / Unity app
+        |
+        | UTF-8 CSV over TCP or UDP
+        v
+Host Python bridge in scripts/
+        |
+        | packed float32 UDP packet
+        v
+ManiSkill teleoperation process
+```
 
-## Contact
+The Unity app is in `hand_tracking_streamer/`. The host-side bridge scripts are in
+`scripts/`.
 
-For support or privacy inquiries related to Hand Tracking Streamer, please email: **wengmister@gmail.com**
+## Repository Layout
+
+```text
+.
+|-- hand_tracking_streamer/          # Unity project for the Quest app
+|   `-- Assets/Scripts/
+|       |-- AppManager.cs            # in-headset menu, protocol, mode, stream state
+|       |-- HandLandmarkStreamer.cs  # wrist + 21 hand landmarks
+|       |-- ControllerPoseStreamer.cs # Quest controller pose stream
+|       |-- HeadPoseStreamer.cs      # optional head pose stream
+|       `-- FistTracking.cs          # left-hand open/closed fallback signal
+|-- scripts/
+|   |-- hand_bridge.py               # hand landmarks -> ManiSkill hand packet
+|   |-- controller_bridge.py         # Quest controller pose -> ManiSkill controller packet
+|   |-- sockets.py                   # raw TCP/UDP listener for debugging
+|   |-- visualizer.py                # stream visualizer/debug tool
+|   `-- test_bridge_logic.py         # bridge packet contract checks
+|-- hand_tracking_streamer.apk       # prebuilt Quest APK, if you do not rebuild Unity
+|-- CONNECTIONS.md                   # upstream HTS stream format notes
+`-- pyproject.toml                   # Python script dependencies
+```
+
+## Requirements
+
+- Meta Quest headset with developer mode enabled.
+- ADB for wired TCP streaming and APK installation.
+- Unity 6000.0.65f1 if rebuilding the Quest app from source.
+- Python 3.13 or newer for the host scripts.
+- ManiSkill teleoperation code that listens for the bridge UDP packet.
+
+Install Python dependencies:
+
+```bash
+uv sync
+```
+
+If you are not using `uv`:
+
+```bash
+python3 -m pip install numpy matplotlib
+```
+
+## Quest App Setup (Not applicable for the current headset we are using since the app has already been built)
+
+You can either sideload the included APK or build the Unity project yourself.
+
+Sideload the APK:
+
+```bash
+adb install -r hand_tracking_streamer.apk
+```
+
+For a local Unity build:
+
+1. Open `hand_tracking_streamer/` in Unity 6000.0.65f1.
+2. Build for Android / Meta Quest.
+3. Install the generated APK with `adb install -r <apk-path>`.
+
+In the headset app, choose:
+
+- Protocol: `TCP Wired`, `TCP Wireless`, or `UDP`.
+- IP/port:
+  - Wired TCP: `127.0.0.1:8000`.
+  - Wireless TCP: host PC LAN IP, usually port `8000`.
+  - UDP: host PC IP or broadcast target, usually port `9000`.
+- Hand mode:
+  - `Both Hands`, `Left Hand Only`, or `Right Hand Only` for hand landmarks.
+  - `Hands + Controllers` to stream both hands and controllers.
+  - `Controllers Only` for controller-driven teleoperation.
 
 
-## Citation
-If you use Hand Tracking Streamer in your research or project, please cite it as:
 
-      @software{weng2026hts,
-            author={Weng, Zhengyang K.},
-            title={Hand Tracking Streamer: Meta Quest VR App for Motion Capture and Teleoperation},
-            url={https://github.com/wengmister/hand-tracking-streamer},
-            year={2026}
-      }
+Start the host bridge before starting the Quest stream. The app performs a quick TCP
+connection check and expects a listener to already be running.
 
+## ManiSkill Hand Teleoperation
 
-## License
-Apache-2.0
+Use `scripts/hand_bridge.py` when driving ManiSkill from hand tracking data.
+
+```bash
+python3 scripts/hand_bridge.py \
+  --in-protocol tcp \
+  --in-port 8000 \
+  --out-host 127.0.0.1 \
+  --out-port 9877
+```
+
+Add `--verbose` to print parsed tracking and curl values:
+
+```bash
+python3 scripts/hand_bridge.py --in-protocol tcp --in-port 8000 --out-port 9877 --verbose
+```
+
+The bridge:
+
+- Receives `Left/Right wrist` and `Left/Right landmarks` CSV lines from the Quest.
+- Converts Unity coordinates from `(x right, y up, z forward)` to ManiSkill
+  `(x forward, y left, z up)` using `(z, -x, y)`.
+- Converts quaternions using `(-qz, qx, -qy, qw)`.
+- Computes thumb, index, middle, ring, and pinky curl values from 21 streamed hand
+  landmark positions.
+- Sends a 104-byte little-endian packet at 60 Hz to the ManiSkill process.
+
+Hand bridge output packet:
+
+```text
+<26f, little-endian, 104 bytes>
+
+right_px, right_py, right_pz,
+right_qx, right_qy, right_qz, right_qw,
+right_tracked,
+right_thumb_curl, right_index_curl, right_middle_curl, right_ring_curl, right_pinky_curl,
+left_px, left_py, left_pz,
+left_qx, left_qy, left_qz, left_qw,
+left_tracked,
+left_thumb_curl, left_index_curl, left_middle_curl, left_ring_curl, left_pinky_curl
+```
+
+Curl values are normalized to `[0.0, 1.0]`, where `0.0` is open/straight and `1.0`
+is closed/bent.
+
+## Controller Bridge
+
+Use `scripts/controller_bridge.py` when the Quest app is tracking the Meta Quest
+controllers instead of hands. It forwards a 72-byte packet:
+
+```text
+<18f, little-endian, 72 bytes>
+
+right_px, right_py, right_pz,
+right_qx, right_qy, right_qz, right_qw,
+right_grasp,
+right_tracked,
+left_px, left_py, left_pz,
+left_qx, left_qy, left_qz, left_qw,
+left_grasp,
+left_tracked
+```
+
+Run it with:
+
+```bash
+python3 scripts/controller_bridge.py \
+  --in-protocol tcp \
+  --in-port 8000 \
+  --out-host 127.0.0.1 \
+  --out-port 9876
+```
+
+By default, gripper forwarding is disabled so a Quest trigger press does not command
+a hard close during arm teleop testing. Enable it explicitly only when the downstream
+ManiSkill controller expects the grasp signal:
+
+```bash
+python3 scripts/controller_bridge.py --in-protocol tcp --in-port 8000 --out-port 9876 --enable-gripper
+```
+
+Note: this script documents and tests a controller CSV contract with a leading tracked
+flag before position and quaternion fields. Confirm that `ControllerPoseStreamer.cs`
+emits the same field order before relying on the controller bridge for experiments.
+The hand bridge is the primary working path for this branch.
+
+## Debugging Raw Streams
+
+Before connecting ManiSkill, verify that Quest telemetry reaches the host.
+
+TCP:
+
+```bash
+python3 scripts/sockets.py --protocol tcp --host localhost --port 8000
+```
+
+UDP:
+
+```bash
+python3 scripts/sockets.py --protocol udp --host 0.0.0.0 --port 9000
+```
+
+Count messages without printing every packet:
+
+```bash
+python3 scripts/sockets.py --protocol tcp --host localhost --port 8000 --tally
+```
+
+For visual inspection of hand landmarks:
+
+```bash
+python3 scripts/visualizer.py --protocol tcp --host localhost --port 8000 --show-fingers
+```
+
+## Stream Formats
+
+The Unity app sends UTF-8 CSV lines. Hand tracking uses OpenXR hand joints and streams
+the wrist plus 21 landmark positions per hand.
+
+Example hand messages:
+
+```text
+Right wrist:, px, py, pz, qx, qy, qz, qw
+Right landmarks:, x0, y0, z0, x1, y1, z1, ... x20, y20, z20
+```
+
+Controller messages are emitted by `ControllerPoseStreamer.cs` when the app is in
+`Hands + Controllers` or `Controllers Only` mode.
+
+Optional debug headers add a frame id and monotonic send timestamp:
+
+```text
+Right wrist | f = 123 | t = 123456789012345:, ...
+```
+
+See `CONNECTIONS.md` for the original HTS stream notes and OpenXR joint ordering.
+
+## Safety Notes
+
+- This branch is for ManiSkill simulation. Do not reuse the ManiSkill coordinate
+  mapping directly for a physical Franka arm without validating the robot frame,
+  workspace limits, gripper behavior, and emergency stop path.
+- Keep gripper forwarding disabled until the downstream controller has been tested.
+- Start with small simulated motions and verify axis directions before using the
+  bridge for real robot teleoperation.
+
+## Troubleshooting
+
+- `TCP Error: Connection refused`: start the Python bridge before pressing Start in
+  the Quest app.
+- Wired TCP receives nothing: run `adb reverse tcp:8000 tcp:8000` and confirm the
+  headset appears in `adb devices`.
+- Wireless TCP cannot connect: use the host PC's LAN IPv4 address, keep Quest and PC
+  on the same network, and allow the port through the firewall.
+- UDP has latency spikes: use TCP wired for the most consistent stream timing.
+- ManiSkill does not move: confirm the bridge output port matches the ManiSkill
+  listener port (`9877` for `hand_bridge.py`, `9876` for `controller_bridge.py` by default).
+
+## Attribution and License
+
+This project is based on the original Hand Tracking Streamer project by Zhengyang K.
+Weng and keeps the Apache-2.0 license. See `LICENSE` for details.

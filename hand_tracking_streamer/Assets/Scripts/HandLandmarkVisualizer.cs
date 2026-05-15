@@ -42,13 +42,7 @@ public class HandLandmarkVisualizer : MonoBehaviour
         }
 
         // Check if this hand should even be active based on AppManager selection
-        // Modes: 0=Both, 1=Left, 2=Right, 3=Hands+Controllers, 4=Controllers Only
         int mode = AppManager.Instance.SelectedHandMode;
-        if (mode == 4) // Controllers Only — hide all hand landmarks
-        {
-            ToggleAllVisualizers(false);
-            return;
-        }
         if ((mode == 1 && _streamer.Side == HandLandmarkStreamer.HandSide.Right) ||
             (mode == 2 && _streamer.Side == HandLandmarkStreamer.HandSide.Left))
         {
@@ -59,7 +53,7 @@ public class HandLandmarkVisualizer : MonoBehaviour
         UpdateVisuals();
     }
 
-private void UpdateVisuals()
+    private void UpdateVisuals()
     {
         IHand hand = _streamer.Hand;
         if (hand == null || !hand.IsTrackedDataValid)
@@ -68,27 +62,24 @@ private void UpdateVisuals()
             return;
         }
 
-        // 1. Get the Wrist (Root) pose in World Space
-        // 2. Get the relative Joint poses
         if (hand.GetRootPose(out Pose rootPose) && 
             hand.GetJointPosesFromWrist(out ReadOnlyHandJointPoses joints))
         {
+            // Position this root object at the wrist's tracking location in WORLD SPACE
+            // This ensures landmarks follow the hand as it moves.
+            transform.position = rootPose.position;
+            transform.rotation = rootPose.rotation;
+
             for (int i = 0; i < _jointsToTrack.Length; i++)
             {
                 int jointIndex = _jointsToTrack[i];
                 if (jointIndex < joints.Count)
                 {
                     _visualizerPool[i].SetActive(true);
-
-                    // Calculate World Position: 
-                    // Wrist Position + (Wrist Rotation * Local Joint Offset)
-                    Vector3 worldPos = rootPose.position + (rootPose.rotation * joints[jointIndex].position);
                     
-                    // Calculate World Rotation:
-                    // Wrist Rotation * Local Joint Rotation
-                    Quaternion worldRot = rootPose.rotation * joints[jointIndex].rotation;
-
-                    _visualizerPool[i].transform.SetPositionAndRotation(worldPos, worldRot);
+                    // joints[index] is already relative to the wrist (rootPose)
+                    _visualizerPool[i].transform.localPosition = joints[jointIndex].position;
+                    _visualizerPool[i].transform.localRotation = joints[jointIndex].rotation;
                 }
             }
         }

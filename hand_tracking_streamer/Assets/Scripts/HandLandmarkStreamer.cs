@@ -90,13 +90,10 @@ public class HandLandmarkStreamer : MonoBehaviour
             return;
         }
 
-        // 2. Check Hand Mode
-        // Modes: 0=Both Hands, 1=Left Only, 2=Right Only, 3=Hands+Controllers, 4=Controllers Only
+        // 2. Check Hand Mode (Logic unchanged: still checks if this hand should be streaming)
         int mode = AppManager.Instance.SelectedHandMode;
-        if (mode == 4) return; // Controllers Only — skip hand streaming
         if (mode == 1 && _handSide == HandSide.Right) return;
         if (mode == 2 && _handSide == HandSide.Left) return;
-        // Modes 0 and 3 stream both hands
 
         // 3. Init Network
         if (!_isInitialized) InitializeNetwork();
@@ -148,13 +145,12 @@ public class HandLandmarkStreamer : MonoBehaviour
             _sbPacket.Append(", ");
             AppendQuaternion(_sbPacket, rootPose.rotation);
 
-            // Prepare HUD Log (wrist slot)
+            // Prepare HUD Log
             if (_logToHUD)
             {
-                var sbWrist = new StringBuilder();
-                sbWrist.AppendLine($"=== [{_handSide}] Wrist ==="); 
-                sbWrist.AppendLine($"Pos: {rootPose.position.ToString("F3")}");
-                LogHUDSlot("wrist", sbWrist.ToString());
+                _sbLog.AppendLine($"=== [{_handSide}] Wrist ==="); 
+                _sbLog.AppendLine($"Pos: {rootPose.position.ToString("F3")}");
+                // _sbLog.AppendLine($"Rot: {rootPose.rotation.eulerAngles.ToString("F0")}");
             }
         }
 
@@ -185,10 +181,9 @@ public class HandLandmarkStreamer : MonoBehaviour
                 }
             }
 
-            // HUD Log (landmarks slot)
+            // HUD Log
             if (_logToHUD)
             {
-                _sbLog.Clear();
                 _sbLog.AppendLine($"=== [{_handSide}] Landmarks ===");
                 for (int i = 0; i < _displayJoints.Length; i++)
                 {
@@ -201,7 +196,7 @@ public class HandLandmarkStreamer : MonoBehaviour
                     }
                 }
                 
-                LogHUDSlot("landmarks", _sbLog.ToString());
+                LogHUD(_sbLog.ToString());
             }
         }
 
@@ -353,14 +348,6 @@ public class HandLandmarkStreamer : MonoBehaviour
         if (_logToHUD && LogManager.Instance != null)
         {
             LogManager.Instance.Log(_hudLogSource, msg);
-        }
-    }
-
-    private void LogHUDSlot(string slotKey, string msg)
-    {
-        if (_logToHUD && LogManager.Instance != null)
-        {
-            LogManager.Instance.LogSlot(_hudLogSource, slotKey, msg);
         }
     }
 }

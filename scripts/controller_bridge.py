@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge: Quest controller stream → raw float array → Franka simulation.
+"""Controller Bridge: Quest controller stream -> raw float array -> Franka simulation.
 
 Receives controller pose data from Hand Tracking Streamer (HTS) over TCP or
 UDP, converts from Unity left-handed coordinates to a right-handed (Z-up)
@@ -23,23 +23,22 @@ Output packet layout (little-endian float32):
     44           left_pz
     48           left_qx
     52           left_qy
-    60           left_qz
-    64           left_qw
-    68           left_grasp
-    72           left_tracked
+    56           left_qz
+    60           left_qw
+    64           left_grasp
+    68           left_tracked
     ──────────── ──────────────────────────
     Total: 18 × float32 = 72 bytes
 
 Usage:
     # Receive on TCP 8000 (USB / adb reverse), forward to UDP 9876
-    python bridge.py --in-protocol tcp --in-port 8000 --out-port 9876
+    python controller_bridge.py --in-protocol tcp --in-port 8000 --out-port 9876
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import math
 import socket
 import struct
 import threading
@@ -65,16 +64,25 @@ class ControllerPose:
     grasp: float = 0.0
 
 def _convert_position(ux: float, uy: float, uz: float) -> Tuple[float, float, float]:
-    """Unity LH (x-right, y-up, z-forward) -> RH (x-front, y-left, z-up)."""
-    # Matrix: [[0, 0, 1], [-1, 0, 0], [0, 1, 0]]
+    """Unity LH (x-right, y-up, z-forward) -> RH (x-front, y-left, z-up).
+    
+    NOTE: This mapping is for the ManiSkill SIMULATION. The real Franka
+    bridge (hand-tracking-streamer-current) uses a different mapping
+    tuned for the FR3 hardware: (uz, uy, -ux).
+    """
+    # Standard Unity LH -> RH Z-up: [[0,0,1],[-1,0,0],[0,1,0]]
     return (uz, -ux, uy)
 
 def _convert_quaternion(qx: float, qy: float, qz: float, qw: float) -> Tuple[float, float, float, float]:
-    """Unity LH Quat -> RH Quat."""
-    # Matches the axis mapping conversion
-    return (qz, -qx, qy, qw)
+    """Unity LH Quat -> RH Quat (for ManiSkill simulation).
+    
+    NOTE: This mapping is for the ManiSkill SIMULATION. The real Franka
+    bridge uses (-qz, qx, -qy, qw) which accounts for the FR3's frame.
+    """
+    # Matches the standard position axis mapping (z, -x, y).
+    return (-qz, qx, -qy, qw)
 
-def _parse_line(line: str, receiver: Receiver) -> Optional[str]:
+def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
     """Parse a CSV line from HTS and update the corresponding side."""
     parts = [p.strip() for p in line.split(",")]
     if not parts:
@@ -88,8 +96,8 @@ def _parse_line(line: str, receiver: Receiver) -> Optional[str]:
         receiver.fist_state = 1.0 if state == "closed" else 0.0
         return "fist"
 
-    # Handle Controller or Hand Tracking (Wrist) updates
-    if "controller" not in header and "wrist" not in header:
+    # Handle Controller, Hand Tracking (Wrist), or Head Updates
+    if "controller" not in header and "wrist" not in header and "head" not in header:
         return None
 
     side = "right" if "right" in header else "left" if "left" in header else None
@@ -116,13 +124,17 @@ def _parse_line(line: str, receiver: Receiver) -> Optional[str]:
         # Rotation (indices 4,5,6,7 in raw_vals)
         target.qx, target.qy, target.qz, target.qw = _convert_quaternion(raw_vals[4], raw_vals[5], raw_vals[6], raw_vals[7])
         
-        # Grasp signal
-        if "wrist" in header:
+        # Grasp signal. Keep disabled by default while testing arm teleop:
+        # vr_teleop_node publishes 1.0 - grasp, so forwarding a pressed
+        # Quest button as 1.0 commands a hard close and can fault the run.
+        if not receiver.enable_gripper:
+            target.grasp = 0.0
+        elif "wrist" in header:
             # For hands, use the global fist state tracked by FistTracking.cs
             target.grasp = receiver.fist_state
         elif len(raw_vals) >= 18:
             # Index breakdown: 0=tracked, 1-3=pos, 4-7=rot, 8-10=fwd, 11-13=up, 14-16=right, 17=button
-            target.grasp = raw_vals[17] # 0.0 or 1.0
+            target.grasp = 1.0 if raw_vals[17] > 0.5 else 0.0
         
         target.tracked = raw_vals[0] > 0.5
         return side
@@ -132,10 +144,11 @@ def _parse_line(line: str, receiver: Receiver) -> Optional[str]:
 
 class Receiver:
     """Manages incoming socket and data state."""
-    def __init__(self, protocol: str, host: str, port: int):
+    def __init__(self, protocol: str, host: str, port: int, enable_gripper: bool = False):
         self.protocol = protocol
         self.host = host
         self.port = port
+        self.enable_gripper = enable_gripper
         self.right = ControllerPose()
         self.left = ControllerPose()
         self.fist_state = 0.0 
@@ -211,15 +224,20 @@ class Receiver:
                 logging.error("TCP Server error: %s", e)
         server.close()
 
-def run_bridge(in_protocol, in_port, out_port, verbose=False):
-    receiver = Receiver(in_protocol, "0.0.0.0", in_port)
+def run_bridge(in_protocol, in_port, out_host, out_port, verbose=False, enable_gripper=False):
+    receiver = Receiver(in_protocol, "0.0.0.0", in_port, enable_gripper=enable_gripper)
     t = threading.Thread(target=receiver.run, daemon=True)
     t.start()
 
     out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    out_addr = ("127.0.0.1", out_port)
+    out_addr = (out_host, out_port)
 
-    logging.info("Bridge started. Forwarding to UDP %d", out_port)
+    logging.info(
+        "Bridge started. Forwarding to UDP %s:%d. Gripper forwarding: %s",
+        out_host,
+        out_port,
+        "enabled" if enable_gripper else "disabled",
+    )
     
     try:
         while True:
@@ -253,12 +271,25 @@ def main():
     parser = argparse.ArgumentParser(description="Quest to ManiSkill Bridge")
     parser.add_argument("--in-protocol", choices=["tcp", "udp"], default="tcp")
     parser.add_argument("--in-port", type=int, default=8000)
+    parser.add_argument("--out-host", type=str, default="127.0.0.1", help="Target IP address for UDP output")
     parser.add_argument("--out-port", type=int, default=9876)
+    parser.add_argument(
+        "--enable-gripper",
+        action="store_true",
+        help="Forward Quest button/fist state as gripper close commands. Default keeps gripper open for arm teleop testing.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run_bridge(args.in_protocol, args.in_port, args.out_port, args.verbose)
+    run_bridge(
+        args.in_protocol,
+        args.in_port,
+        args.out_host,
+        args.out_port,
+        args.verbose,
+        args.enable_gripper,
+    )
 
 if __name__ == "__main__":
     main()

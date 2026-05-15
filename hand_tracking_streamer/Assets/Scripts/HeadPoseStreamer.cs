@@ -24,8 +24,13 @@ public class HeadPoseStreamer : MonoBehaviour
     private float _timer;
 
     private readonly StringBuilder _sbPacket = new StringBuilder(256);
-    private readonly StringBuilder _sbLog = new StringBuilder(256);
+    private readonly StringBuilder _sbLog = new StringBuilder(512);
     private uint _frameId;
+
+    // Optimized buffer to avoid per-frame allocations
+    private byte[] _sendBuffer = new byte[1024];
+    private float _hudTimer;
+    private const float HUD_UPDATE_INTERVAL = 0.2f; // Throttled HUD update
 
     private static readonly double TicksToNs = 1_000_000_000.0 / Stopwatch.Frequency;
 
@@ -102,13 +107,50 @@ public class HeadPoseStreamer : MonoBehaviour
 
         if (logToHUD)
         {
-            _sbLog.AppendLine("=== [Head] Pose ===");
-            _sbLog.Append("Pos: ").AppendLine(FormatVector3Tuple(position));
-            _sbLog.Append("Rot: ").AppendLine(FormatQuaternionTuple(rotation));
-            LogHUDSlot("head", _sbLog.ToString());
+            _hudTimer += Time.deltaTime;
+            if (_hudTimer >= HUD_UPDATE_INTERVAL)
+            {
+                _hudTimer = 0f;
+                _sbLog.AppendLine("=== [Head] Pose ===");
+                _sbLog.Append("Pos: ").AppendLine(FormatVector3Tuple(position));
+                _sbLog.Append("Rot: ").AppendLine(FormatQuaternionTuple(rotation));
+                LogHUDSlot("head", _sbLog.ToString());
+            }
         }
 
-        SendData(_sbPacket.ToString());
+        SendOptimized(_sbPacket);
+    }
+
+    private void SendOptimized(StringBuilder sb)
+    {
+        if (AppManager.Instance == null || !AppManager.Instance.isStreaming) return;
+        if (!_isInitialized) return;
+
+        try
+        {
+            int byteCount = Encoding.UTF8.GetBytes(sb.ToString(), 0, sb.Length, _sendBuffer, 0);
+
+            if (_currentProtocol == 0 && _udpClient != null)
+            {
+                _udpClient.Send(_sendBuffer, byteCount, _remoteEndPoint);
+            }
+            else if ((_currentProtocol == 1 || _currentProtocol == 2) && _tcpStream != null && _tcpStream.CanWrite)
+            {
+                if (byteCount < _sendBuffer.Length - 1)
+                {
+                    _sendBuffer[byteCount] = (byte)'\n';
+                    _tcpStream.Write(_sendBuffer, 0, byteCount + 1);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Disconnect();
+            if (AppManager.Instance != null)
+            {
+                AppManager.Instance.HandleDisconnection("Head pose send failed: " + ex.Message);
+            }
+        }
     }
 
     private void InitializeNetwork()
@@ -150,36 +192,6 @@ public class HeadPoseStreamer : MonoBehaviour
             if (AppManager.Instance != null)
             {
                 AppManager.Instance.StopStreaming();
-            }
-        }
-    }
-
-    private void SendData(string message)
-    {
-        if (AppManager.Instance != null && !AppManager.Instance.isStreaming)
-        {
-            return;
-        }
-
-        try
-        {
-            if (_currentProtocol == 0 && _udpClient != null)
-            {
-                byte[] data = Encoding.UTF8.GetBytes(message);
-                _udpClient.Send(data, data.Length, _remoteEndPoint);
-            }
-            else if ((_currentProtocol == 1 || _currentProtocol == 2) && _tcpStream != null && _tcpStream.CanWrite)
-            {
-                byte[] data = Encoding.UTF8.GetBytes(message + "\n");
-                _tcpStream.Write(data, 0, data.Length);
-            }
-        }
-        catch (Exception ex)
-        {
-            Disconnect();
-            if (AppManager.Instance != null)
-            {
-                AppManager.Instance.HandleDisconnection("Head pose send failed: " + ex.Message);
             }
         }
     }
