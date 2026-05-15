@@ -37,12 +37,11 @@ If the Quest app is set to `Controllers Only`, or you are using controller pose 
 
 ## Steps to start the teleoperation and simulation
 
-Terminal 1, start ManiSkill teleoperation so it listens on the expected UDP port.
+Terminal 1, start the bridge:
+Before running the bash command below, make sure that you have allow the cable connection to allow data connection from the VR to the PC by enabling it on the Meta Quest VR headset screen
 
-Terminal 2, start the bridge:
-
-Before running the bash command below, make sure that you have allow the cable connection to allow data connection from the VR to the PC by enabling it on the Meta Quest VR headset screen 
-
+Terminal 2, start ManiSkill teleoperation so it listens on the expected UDP port.
+ 
 ```bash
 adb reverse tcp:8000 tcp:8000
 python3 scripts/hand_bridge.py --in-protocol tcp --in-port 8000 --out-port 9877 --verbose
@@ -50,7 +49,7 @@ python3 scripts/hand_bridge.py --in-protocol tcp --in-port 8000 --out-port 9877 
 
 In the Quest app:
 
-1. Select `TCP Wired`.
+1. Select `TCP Wired`. (Make sure the cable have been connected between the VR headset and the PC)
 2. Set IP to `127.0.0.1`.
 3. Set port to `8000`.
 4. Select `Both Hands` or `Controller` mode on the option.
@@ -118,40 +117,7 @@ If you are not using `uv`:
 python3 -m pip install numpy matplotlib
 ```
 
-## Quest App Setup (Not applicable for the current headset we are using since the app has already been built)
-
-You can either sideload the included APK or build the Unity project yourself.
-
-Sideload the APK:
-
-```bash
-adb install -r hand_tracking_streamer.apk
-```
-
-For a local Unity build:
-
-1. Open `hand_tracking_streamer/` in Unity 6000.0.65f1.
-2. Build for Android / Meta Quest.
-3. Install the generated APK with `adb install -r <apk-path>`.
-
-In the headset app, choose:
-
-- Protocol: `TCP Wired`, `TCP Wireless`, or `UDP`.
-- IP/port:
-  - Wired TCP: `127.0.0.1:8000`.
-  - Wireless TCP: host PC LAN IP, usually port `8000`.
-  - UDP: host PC IP or broadcast target, usually port `9000`.
-- Hand mode:
-  - `Both Hands`, `Left Hand Only`, or `Right Hand Only` for hand landmarks.
-  - `Hands + Controllers` to stream both hands and controllers.
-  - `Controllers Only` for controller-driven teleoperation.
-
-
-
-Start the host bridge before starting the Quest stream. The app performs a quick TCP
-connection check and expects a listener to already be running.
-
-## ManiSkill Hand Teleoperation
+## ManiSkill Hand Teleoperation, Hand Bridge
 
 Use `scripts/hand_bridge.py` when driving ManiSkill from hand tracking data.
 
@@ -197,7 +163,7 @@ left_thumb_curl, left_index_curl, left_middle_curl, left_ring_curl, left_pinky_c
 Curl values are normalized to `[0.0, 1.0]`, where `0.0` is open/straight and `1.0`
 is closed/bent.
 
-## Controller Bridge
+## ManiSkill Controller Teleoperation, Controller Bridge
 
 Use `scripts/controller_bridge.py` when the Quest app is tracking the Meta Quest
 controllers instead of hands. It forwards a 72-byte packet:
