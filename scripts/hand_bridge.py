@@ -61,10 +61,23 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 # 26 floats = 104 bytes. Retarget mode sends 32 floats = 128 bytes.
+# Shadow joint mode sends 80 floats = 320 bytes:
+#   16-float retarget block + 24 normalized Shadow joint controls per hand.
 _PACK_FMT = "<26f"
 _RETARGET_PACK_FMT = "<32f"
+_SHADOW_JOINT_PACK_FMT = "<80f"
 _PACK_SIZE = struct.calcsize(_PACK_FMT)
 _RETARGET_PACK_SIZE = struct.calcsize(_RETARGET_PACK_FMT)
+_SHADOW_JOINT_PACK_SIZE = struct.calcsize(_SHADOW_JOINT_PACK_FMT)
+
+SHADOW_JOINT_NAMES = (
+    "WRJ1", "WRJ2",
+    "FFJ1", "FFJ2", "FFJ3", "FFJ4",
+    "MFJ1", "MFJ2", "MFJ3", "MFJ4",
+    "RFJ1", "RFJ2", "RFJ3", "RFJ4",
+    "LFJ1", "LFJ2", "LFJ3", "LFJ4", "LFJ5",
+    "THJ1", "THJ2", "THJ3", "THJ4", "THJ5",
+)
 
 
 @dataclass
@@ -95,6 +108,9 @@ class HandPose:
     thumb_opposition: float = 0.0
     finger_spread: float = 0.0
     palm_cup: float = 0.0
+    shadow_joint_targets: np.ndarray = field(default_factory=lambda: np.zeros(len(SHADOW_JOINT_NAMES), dtype=np.float32))
+    thumb_joint_angles: np.ndarray = field(default_factory=lambda: np.full(3, np.nan, dtype=np.float32))
+    finger_joint_angles: np.ndarray = field(default_factory=lambda: np.full((4, 3), np.nan, dtype=np.float32))
     # Raw landmark positions (21 joints × 3 coords = 63 floats)
     landmarks: Optional[np.ndarray] = None
 
@@ -252,6 +268,269 @@ def _angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> float:
     return float(np.arccos(cos_angle))
 
 
+def _joint_bend_amount(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    open_angle: float = 0.0,
+    closed_angle: float = math.pi / 2.0,
+) -> float:
+    angle = _angle_between_vectors(p1 - p0, p2 - p1)
+    return _distance_to_unit_interval(angle, open_angle, closed_angle)
+
+
+def _spread_amount(
+    palm_lateral: np.ndarray,
+    palm_distal: np.ndarray,
+    finger_mcp: np.ndarray,
+    finger_tip: np.ndarray,
+    open_angle: float,
+    closed_angle: float,
+) -> float:
+    direction = _safe_unit(finger_tip - finger_mcp)
+    if direction is None:
+        return 0.0
+    x = float(np.dot(direction, palm_lateral))
+    y = float(np.dot(direction, palm_distal))
+    angle = math.atan2(x, y)
+    return _distance_to_unit_interval(angle, open_angle, closed_angle)
+
+
+def _mcp_flex_amount(
+    palm_distal: np.ndarray,
+    palm_normal: np.ndarray,
+    finger_mcp: np.ndarray,
+    finger_pip: np.ndarray,
+    open_angle: float = 0.06,
+    closed_angle: float = 0.82,
+) -> float:
+    """Estimate MCP/base flexion from the proximal phalanx in the palm frame.
+
+    The previous wrist-MCP-PIP angle is weak for MCP flexion because wrist->MCP
+    mostly lies inside the palm and does not represent a true metacarpal axis.
+    This measures how much MCP->PIP leaves the palm distal direction and bends
+    into/out of the palm normal direction.
+    """
+    direction = _safe_unit(finger_pip - finger_mcp)
+    if direction is None:
+        return 0.0
+    distal_component = max(float(np.dot(direction, palm_distal)), 1e-6)
+    normal_component = abs(float(np.dot(direction, palm_normal)))
+    angle = math.atan2(normal_component, distal_component)
+    return _distance_to_unit_interval(angle, open_angle, closed_angle)
+
+
+def _finger_mcp_curl_amount(
+    palm_distal: np.ndarray,
+    finger_mcp: np.ndarray,
+    finger_tip: np.ndarray,
+    open_angle: float = 0.05,
+    closed_angle: float = 0.92,
+) -> float:
+    """Estimate whole-finger MCP flexion from the MCP-to-tip direction."""
+    direction = _safe_unit(finger_tip - finger_mcp)
+    if direction is None:
+        return 0.0
+    distal_component = float(np.dot(direction, palm_distal))
+    angle = math.acos(float(np.clip(distal_component, -1.0, 1.0)))
+    return _distance_to_unit_interval(angle, open_angle, closed_angle)
+
+
+def _point_to_palm_amount(
+    point: np.ndarray,
+    palm_center: np.ndarray,
+    palm_width: float,
+    open_distance: float,
+    closed_distance: float,
+) -> float:
+    if palm_width < 1e-8:
+        return 0.0
+    distance = float(np.linalg.norm(point - palm_center) / palm_width)
+    return _distance_to_unit_interval(distance, open_distance, closed_distance)
+
+
+def _thumb_across_palm_amount(
+    palm_lateral: np.ndarray,
+    thumb_base: np.ndarray,
+    thumb_tip: np.ndarray,
+    palm_width: float,
+) -> float:
+    """Return 0 for an open/lateral thumb and 1 when it crosses into the palm."""
+    if palm_width < 1e-8:
+        return 0.0
+    across = -float(np.dot(thumb_tip - thumb_base, palm_lateral)) / palm_width
+    return _distance_to_unit_interval(across, -0.55, 0.18)
+
+
+def compute_shadow_joint_targets_from_landmarks(landmarks: np.ndarray, handedness: str = "right") -> np.ndarray:
+    """Compute normalized Shadow joint controls from 21 hand landmarks.
+
+    Outputs are in SHADOW_JOINT_NAMES order and normalized to [0, 1].  They are
+    later mapped to actual Shadow joint ranges by vr_teleop.py.
+    """
+    targets = np.zeros(len(SHADOW_JOINT_NAMES), dtype=np.float32)
+    if landmarks is None or len(landmarks) < 21:
+        return targets
+
+    wrist = landmarks[0]
+    index_mcp = landmarks[5]
+    pinky_mcp = landmarks[17]
+    finger_center = np.mean(landmarks[[5, 9, 13, 17]], axis=0)
+    palm_distal = _safe_unit(finger_center - wrist)
+    palm_lateral = _safe_unit(index_mcp - pinky_mcp)
+    if palm_distal is None or palm_lateral is None:
+        return targets
+    if handedness.lower() == "left":
+        palm_normal = _safe_unit(np.cross(palm_distal, palm_lateral))
+    else:
+        palm_normal = _safe_unit(np.cross(palm_lateral, palm_distal))
+    if palm_normal is None:
+        return targets
+
+    palm_width = float(np.linalg.norm(index_mcp - pinky_mcp))
+    if palm_width < 1e-8:
+        return targets
+    palm_center = np.mean(landmarks[[0, 5, 9, 13, 17]], axis=0)
+
+    name_to_idx = {name: idx for idx, name in enumerate(SHADOW_JOINT_NAMES)}
+
+    finger_specs = {
+        "FF": (5, 6, 7, 8, -0.18, 0.16),
+        "MF": (9, 10, 11, 12, -0.05, 0.05),
+        "RF": (13, 14, 15, 16, 0.08, -0.08),
+        "LF": (17, 18, 19, 20, 0.18, 0.30),
+    }
+    for prefix, (mcp_i, pip_i, dip_i, tip_i, open_spread, closed_spread) in finger_specs.items():
+        mcp, pip, dip, tip = landmarks[mcp_i], landmarks[pip_i], landmarks[dip_i], landmarks[tip_i]
+        proximal_flex = _mcp_flex_amount(
+            palm_distal,
+            palm_normal,
+            mcp,
+            pip,
+            open_angle=0.04,
+            closed_angle=0.72,
+        )
+        whole_finger_flex = _finger_mcp_curl_amount(palm_distal, mcp, tip)
+        mcp_flex = max(proximal_flex, whole_finger_flex)
+        if prefix == "LF":
+            mcp_flex = min(1.0, 1.18 * mcp_flex)
+        targets[name_to_idx[f"{prefix}J3"]] = mcp_flex
+        targets[name_to_idx[f"{prefix}J2"]] = _joint_bend_amount(mcp, pip, dip)
+        targets[name_to_idx[f"{prefix}J1"]] = _joint_bend_amount(pip, dip, tip)
+        if prefix != "MF":
+            spread = _spread_amount(
+                palm_lateral,
+                palm_distal,
+                mcp,
+                tip,
+                open_spread,
+                closed_spread,
+            )
+            if prefix == "LF":
+                spread = max(spread, 0.65 * mcp_flex)
+            targets[name_to_idx[f"{prefix}J4"]] = spread
+
+    thumb_base = landmarks[1]
+    thumb_mcp = landmarks[2]
+    thumb_ip = landmarks[3]
+    thumb_tip = landmarks[4]
+    thumb_across_palm = _thumb_across_palm_amount(
+        palm_lateral,
+        thumb_base,
+        thumb_tip,
+        palm_width,
+    )
+    thumb_ip_to_palm = _point_to_palm_amount(
+        thumb_ip,
+        palm_center,
+        palm_width,
+        open_distance=1.05,
+        closed_distance=0.48,
+    )
+    thumb_mcp_to_palm = _point_to_palm_amount(
+        thumb_mcp,
+        palm_center,
+        palm_width,
+        open_distance=0.78,
+        closed_distance=0.36,
+    )
+    thumb_base_flex = max(thumb_ip_to_palm, 0.65 * thumb_across_palm, thumb_mcp_to_palm)
+    targets[name_to_idx["THJ3"]] = thumb_base_flex
+    targets[name_to_idx["THJ2"]] = _joint_bend_amount(
+        thumb_base,
+        thumb_mcp,
+        thumb_ip,
+        closed_angle=0.80,
+    )
+    targets[name_to_idx["THJ1"]] = _joint_bend_amount(
+        thumb_mcp,
+        thumb_ip,
+        thumb_tip,
+        closed_angle=0.55,
+    )
+
+    pinch_target = 0.5 * (landmarks[8] + landmarks[12])
+    thumb_distance = np.linalg.norm(thumb_tip - pinch_target) / palm_width
+    pinch_opposition = 1.0 - _distance_to_unit_interval(thumb_distance, 0.45, 1.5)
+    thumb_to_palm = np.linalg.norm(thumb_tip - palm_center) / palm_width
+    palm_opposition = 1.0 - _distance_to_unit_interval(thumb_to_palm, 0.55, 1.35)
+    thumb_opposition = max(pinch_opposition, palm_opposition, thumb_across_palm)
+    targets[name_to_idx["THJ4"]] = thumb_opposition
+    targets[name_to_idx["THJ5"]] = thumb_opposition
+
+    pinky_to_palm = np.linalg.norm(landmarks[20] - palm_center) / palm_width
+    pinky_cup = 1.0 - _distance_to_unit_interval(pinky_to_palm, 0.45, 1.25)
+    targets[name_to_idx["LFJ5"]] = 0.45 * pinky_cup
+
+    return np.clip(targets, 0.0, 1.0).astype(np.float32)
+
+
+def compute_thumb_joint_angles_from_landmarks(landmarks: np.ndarray) -> np.ndarray:
+    """Return thumb IP, MCP, and base bend angles in radians for debugging."""
+    if landmarks is None or len(landmarks) < 21:
+        return np.full(3, np.nan, dtype=np.float32)
+    thumb_base = landmarks[1]
+    thumb_mcp = landmarks[2]
+    thumb_ip = landmarks[3]
+    thumb_tip = landmarks[4]
+    return np.asarray(
+        [
+            _angle_between_vectors(thumb_ip - thumb_mcp, thumb_tip - thumb_ip),
+            _angle_between_vectors(thumb_mcp - thumb_base, thumb_ip - thumb_mcp),
+            _angle_between_vectors(thumb_base - landmarks[0], thumb_mcp - thumb_base),
+        ],
+        dtype=np.float32,
+    )
+
+
+def compute_finger_joint_angles_from_landmarks(landmarks: np.ndarray) -> np.ndarray:
+    """Return DIP, PIP, MCP bend angles in radians for index/middle/ring/little."""
+    values = np.full((4, 3), np.nan, dtype=np.float32)
+    if landmarks is None or len(landmarks) < 21:
+        return values
+    finger_indices = (
+        (5, 6, 7, 8),
+        (9, 10, 11, 12),
+        (13, 14, 15, 16),
+        (17, 18, 19, 20),
+    )
+    wrist = landmarks[0]
+    for row, (mcp_i, pip_i, dip_i, tip_i) in enumerate(finger_indices):
+        mcp = landmarks[mcp_i]
+        pip = landmarks[pip_i]
+        dip = landmarks[dip_i]
+        tip = landmarks[tip_i]
+        values[row] = np.asarray(
+            [
+                _angle_between_vectors(dip - pip, tip - dip),
+                _angle_between_vectors(pip - mcp, dip - pip),
+                _angle_between_vectors(mcp - wrist, pip - mcp),
+            ],
+            dtype=np.float32,
+        )
+    return values
+
+
 def compute_finger_curls(landmarks: np.ndarray) -> Tuple[float, float, float, float, float]:
     """Compute per-finger curl values from the 21 landmark positions.
 
@@ -327,8 +606,8 @@ def compute_shadow_retarget_features(landmarks: np.ndarray) -> Tuple[float, floa
 
     wrist = landmarks[0]
     index_mcp = landmarks[5]
-    middle_mcp = landmarks[9]
     pinky_mcp = landmarks[17]
+    thumb_base = landmarks[1]
     thumb_tip = landmarks[4]
     index_tip = landmarks[8]
     middle_tip = landmarks[12]
@@ -337,17 +616,31 @@ def compute_shadow_retarget_features(landmarks: np.ndarray) -> Tuple[float, floa
     palm_width = np.linalg.norm(index_mcp - pinky_mcp)
     if palm_width < 1e-8:
         return (0.0, 0.0, 0.0)
+    finger_center = np.mean(landmarks[[5, 9, 13, 17]], axis=0)
+    palm_distal = _safe_unit(finger_center - wrist)
+    palm_lateral = _safe_unit(index_mcp - pinky_mcp)
+    if palm_distal is None or palm_lateral is None:
+        return (0.0, 0.0, 0.0)
 
     pinch_target = 0.5 * (index_tip + middle_tip)
     thumb_distance = np.linalg.norm(thumb_tip - pinch_target) / palm_width
     thumb_opposition = 1.0 - _distance_to_unit_interval(thumb_distance, 0.45, 1.5)
+    palm_center = np.mean(landmarks[[0, 5, 9, 13, 17]], axis=0)
+    thumb_to_palm = np.linalg.norm(thumb_tip - palm_center) / palm_width
+    palm_opposition = 1.0 - _distance_to_unit_interval(thumb_to_palm, 0.55, 1.35)
+    thumb_across_palm = _thumb_across_palm_amount(
+        palm_lateral,
+        thumb_base,
+        thumb_tip,
+        float(palm_width),
+    )
+    thumb_opposition = max(thumb_opposition, palm_opposition, thumb_across_palm)
 
     tip_spread = np.linalg.norm(index_tip - pinky_tip) / palm_width
     finger_spread = _distance_to_unit_interval(tip_spread, 0.7, 1.9)
 
-    palm_center = np.mean(landmarks[[0, 5, 9, 13, 17]], axis=0)
     pinky_to_palm = np.linalg.norm(pinky_tip - palm_center) / palm_width
-    palm_cup = 1.0 - _distance_to_unit_interval(pinky_to_palm, 0.65, 1.6)
+    palm_cup = 0.45 * (1.0 - _distance_to_unit_interval(pinky_to_palm, 0.45, 1.25))
 
     return (
         float(np.clip(thumb_opposition, 0.0, 1.0)),
@@ -433,6 +726,9 @@ def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
             # Compute finger curls from the landmark positions
             curls = compute_finger_curls(target.landmarks)
             retarget_features = compute_shadow_retarget_features(target.landmarks)
+            shadow_joint_targets = compute_shadow_joint_targets_from_landmarks(target.landmarks, handedness=side)
+            thumb_joint_angles = compute_thumb_joint_angles_from_landmarks(target.landmarks)
+            finger_joint_angles = compute_finger_joint_angles_from_landmarks(target.landmarks)
             palm_pose = compute_palm_pose_from_landmarks(target.landmarks, handedness=side)
             if palm_pose is not None:
                 palm_position, palm_quaternion_wxyz = palm_pose
@@ -476,6 +772,9 @@ def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
             target.thumb_opposition = retarget_features[0]
             target.finger_spread = retarget_features[1]
             target.palm_cup = retarget_features[2]
+            target.shadow_joint_targets = shadow_joint_targets
+            target.thumb_joint_angles = thumb_joint_angles
+            target.finger_joint_angles = finger_joint_angles
             return f"{side}_landmarks"
 
     except Exception as e:
@@ -574,6 +873,11 @@ def run_bridge(
     out_host: str,
     verbose: bool = False,
     shadow_retarget_packet: bool = False,
+    shadow_joint_packet: bool = False,
+    thumb_debug: bool = False,
+    thumb_debug_interval: float = 0.25,
+    finger_debug: bool = False,
+    finger_debug_interval: float = 0.25,
 ):
     receiver = Receiver(in_protocol, "0.0.0.0", in_port)
     t = threading.Thread(target=receiver.run, daemon=True)
@@ -583,11 +887,45 @@ def run_bridge(
     out_addr = (out_host, out_port)
 
     logging.info("Hand Bridge started. Forwarding to UDP %s:%d", out_host, out_port)
+    last_thumb_debug_time = 0.0
+    last_finger_debug_time = 0.0
 
     try:
         while True:
             with receiver._lock:
-                if shadow_retarget_packet:
+                if shadow_joint_packet:
+                    right_shadow = np.asarray(receiver.right.shadow_joint_targets, dtype=np.float32)
+                    left_shadow = np.asarray(receiver.left.shadow_joint_targets, dtype=np.float32)
+                    packet = struct.pack(
+                        _SHADOW_JOINT_PACK_FMT,
+                        # Right Hand (40 floats)
+                        receiver.right.px, receiver.right.py, receiver.right.pz,
+                        receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw,
+                        float(receiver.right.tracked),
+                        receiver.right.thumb_curl,
+                        receiver.right.index_curl,
+                        receiver.right.middle_curl,
+                        receiver.right.ring_curl,
+                        receiver.right.pinky_curl,
+                        receiver.right.thumb_opposition,
+                        receiver.right.finger_spread,
+                        receiver.right.palm_cup,
+                        *right_shadow.tolist(),
+                        # Left Hand (40 floats)
+                        receiver.left.px, receiver.left.py, receiver.left.pz,
+                        receiver.left.qx, receiver.left.qy, receiver.left.qz, receiver.left.qw,
+                        float(receiver.left.tracked),
+                        receiver.left.thumb_curl,
+                        receiver.left.index_curl,
+                        receiver.left.middle_curl,
+                        receiver.left.ring_curl,
+                        receiver.left.pinky_curl,
+                        receiver.left.thumb_opposition,
+                        receiver.left.finger_spread,
+                        receiver.left.palm_cup,
+                        *left_shadow.tolist(),
+                    )
+                elif shadow_retarget_packet:
                     # Pack data: 32 floats = 128 bytes.
                     # Per hand: pos(3), quat(4), tracked, curls(5), retarget features(3)
                     packet = struct.pack(
@@ -643,6 +981,58 @@ def run_bridge(
                         receiver.left.pinky_curl,
                     )
 
+                now = time.time()
+                if thumb_debug and now - last_thumb_debug_time >= max(float(thumb_debug_interval), 1e-3):
+                    last_thumb_debug_time = now
+                    right_shadow = np.asarray(receiver.right.shadow_joint_targets, dtype=np.float32)
+                    left_shadow = np.asarray(receiver.left.shadow_joint_targets, dtype=np.float32)
+                    right_angles = np.asarray(receiver.right.thumb_joint_angles, dtype=np.float32)
+                    left_angles = np.asarray(receiver.left.thumb_joint_angles, dtype=np.float32)
+                    right_thumb = right_shadow[19:24] if right_shadow.size >= 24 else np.zeros(5, dtype=np.float32)
+                    left_thumb = left_shadow[19:24] if left_shadow.size >= 24 else np.zeros(5, dtype=np.float32)
+                    logging.info(
+                        "ThumbDebug Bridge | R tracked=%d curl=%.3f opp=%.3f "
+                        "ang[IP,MCP,base]=[% .3f % .3f % .3f] THJ[1:5]=[% .3f % .3f % .3f % .3f % .3f] | "
+                        "L tracked=%d curl=%.3f opp=%.3f "
+                        "ang[IP,MCP,base]=[% .3f % .3f % .3f] THJ[1:5]=[% .3f % .3f % .3f % .3f % .3f]",
+                        receiver.right.tracked,
+                        receiver.right.thumb_curl,
+                        receiver.right.thumb_opposition,
+                        right_angles[0], right_angles[1], right_angles[2],
+                        right_thumb[0], right_thumb[1], right_thumb[2], right_thumb[3], right_thumb[4],
+                        receiver.left.tracked,
+                        receiver.left.thumb_curl,
+                        receiver.left.thumb_opposition,
+                        left_angles[0], left_angles[1], left_angles[2],
+                        left_thumb[0], left_thumb[1], left_thumb[2], left_thumb[3], left_thumb[4],
+                    )
+
+                if finger_debug and now - last_finger_debug_time >= max(float(finger_debug_interval), 1e-3):
+                    last_finger_debug_time = now
+                    right_shadow = np.asarray(receiver.right.shadow_joint_targets, dtype=np.float32)
+                    left_shadow = np.asarray(receiver.left.shadow_joint_targets, dtype=np.float32)
+                    right_angles = np.asarray(receiver.right.finger_joint_angles, dtype=np.float32)
+                    left_angles = np.asarray(receiver.left.finger_joint_angles, dtype=np.float32)
+                    finger_slices = (("FF", 2), ("MF", 6), ("RF", 10), ("LF", 14))
+                    right_parts = []
+                    left_parts = []
+                    for row, (name, start) in enumerate(finger_slices):
+                        right_vals = right_shadow[start:start + 3] if right_shadow.size >= start + 3 else np.full(3, np.nan)
+                        left_vals = left_shadow[start:start + 3] if left_shadow.size >= start + 3 else np.full(3, np.nan)
+                        right_parts.append(
+                            f"{name} ang[DIP,PIP,MCP]={np.array2string(right_angles[row], precision=3, suppress_small=True)} "
+                            f"J[1:3]={np.array2string(right_vals, precision=3, suppress_small=True)}"
+                        )
+                        left_parts.append(
+                            f"{name} ang[DIP,PIP,MCP]={np.array2string(left_angles[row], precision=3, suppress_small=True)} "
+                            f"J[1:3]={np.array2string(left_vals, precision=3, suppress_small=True)}"
+                        )
+                    logging.info(
+                        "FingerDebug Bridge | R %s | L %s",
+                        " | ".join(right_parts),
+                        " | ".join(left_parts),
+                    )
+
                 if verbose and (receiver.right.tracked or receiver.left.tracked):
                     logging.info(
                         "R:%d Curls[T:%.2f I:%.2f M:%.2f R:%.2f P:%.2f] "
@@ -681,6 +1071,15 @@ def main():
         action="store_true",
         help="Send the 128-byte packet with extra Shadow Hand retargeting features.",
     )
+    parser.add_argument(
+        "--shadow-joint-packet",
+        action="store_true",
+        help="Send the 320-byte packet with per-joint Shadow Hand retargeting targets.",
+    )
+    parser.add_argument("--thumb-debug", action="store_true", help="Log raw per-thumb Shadow joint targets.")
+    parser.add_argument("--thumb-debug-interval", type=float, default=0.25)
+    parser.add_argument("--finger-debug", action="store_true", help="Log raw per-finger Shadow joint targets.")
+    parser.add_argument("--finger-debug-interval", type=float, default=0.25)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -691,6 +1090,11 @@ def main():
         args.out_host,
         args.verbose,
         args.shadow_retarget_packet,
+        args.shadow_joint_packet,
+        args.thumb_debug,
+        args.thumb_debug_interval,
+        args.finger_debug,
+        args.finger_debug_interval,
     )
 
 
