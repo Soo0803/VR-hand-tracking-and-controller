@@ -1082,6 +1082,16 @@ def main():
     parser.add_argument("--finger-debug-interval", type=float, default=0.25)
     args = parser.parse_args()
 
+    # Default to the Shadow joint packet so vr_teleop.py can drive the thumb
+    # from per-joint landmark retargeting instead of the coarse curl heuristic.
+    if not args.shadow_retarget_packet and not args.shadow_joint_packet:
+        args.shadow_joint_packet = True
+        print(
+            "[HandBridge] No packet mode selected; defaulting to --shadow-joint-packet "
+            "for more accurate Shadow thumb teleoperation.",
+            flush=True,
+        )
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     run_bridge(
         args.in_protocol,
