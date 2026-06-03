@@ -64,7 +64,7 @@ def test_controller_parse_gripper_disabled():
     # Rotation mapping follows the ManiSkill bridge packet convention.
     assert_close_tuple(
         (receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw),
-        (0.6, -0.4, 0.5, 0.7),
+        (-0.6, 0.4, -0.5, 0.7),
     )
     # Default safety: pressing the Quest button does not close the gripper.
     assert receiver.right.grasp == 0.0
@@ -93,7 +93,7 @@ def test_packet_contract():
     assert bridge._PACK_SIZE == 72
     assert len(packet) == 72
     assert len(vals) == 18
-    assert_close_tuple(vals[:9], (0.3, -0.1, 0.2, 0.6, -0.4, 0.5, 0.7, 1.0, 1.0))
+    assert_close_tuple(vals[:9], (0.3, -0.1, 0.2, -0.6, 0.4, -0.5, 0.7, 1.0, 1.0))
     assert_close_tuple(vals[9:], (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
 
 
@@ -112,7 +112,7 @@ def test_controller_parse_current_unity_pose_first_format():
     assert parsed == "right"
     assert receiver.right.tracked is True
     assert_close_tuple((receiver.right.px, receiver.right.py, receiver.right.pz), (0.3, -0.1, 0.2))
-    assert_close_tuple((receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw), (0.6, -0.4, 0.5, 0.7))
+    assert_close_tuple((receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw), (-0.6, 0.4, -0.5, 0.7))
     assert receiver.right.grasp == 1.0
 
 

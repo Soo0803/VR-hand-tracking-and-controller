@@ -76,11 +76,11 @@ def _convert_position(ux: float, uy: float, uz: float) -> Tuple[float, float, fl
 def _convert_quaternion(qx: float, qy: float, qz: float, qw: float) -> Tuple[float, float, float, float]:
     """Unity LH Quat -> RH Quat (for ManiSkill simulation).
     
-    NOTE: This mapping is for the ManiSkill SIMULATION. The real Franka
-    bridge uses (-qz, qx, -qy, qw) which accounts for the FR3's frame.
+    This matches the position basis change (x, y, z) -> (z, -x, y).
+    The handedness flip means the quaternion vector components take the
+    opposite signs from the direct axis permutation.
     """
-    # Matches the standard position axis mapping (z, -x, y).
-    return (qz, -qx, qy, qw)
+    return (-qz, qx, -qy, qw)
 
 def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
     """Parse a CSV line from HTS and update the corresponding side."""

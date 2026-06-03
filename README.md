@@ -181,23 +181,41 @@ left_grasp,
 left_tracked
 ```
 
-Run it with:
+Run this bridge when teleoperating ManiSkill with the Quest controllers. This is
+the standard command for the gripper-controller branch:
 
 ```bash
+cd /home/pair/controller_tracking_streamer
+
 python3 scripts/controller_bridge.py \
   --in-protocol tcp \
   --in-port 8000 \
   --out-host 127.0.0.1 \
-  --out-port 9876
+  --out-port 9876 \
+  --enable-gripper \
+  --grasp-threshold 0.5 \
+  --verbose
 ```
 
-By default, gripper forwarding is disabled so a Quest A/primary-button press does
-not command a hard close during arm teleop testing. Enable it explicitly only when
-the downstream ManiSkill controller expects the grasp signal:
+Use this with the Quest app set to `TCP Wired`, IP `127.0.0.1`, port `8000`,
+and controller tracking enabled. Before running the bridge over USB, set up ADB
+port forwarding:
 
 ```bash
-python3 scripts/controller_bridge.py --in-protocol tcp --in-port 8000 --out-port 9876 --enable-gripper
+adb reverse tcp:8000 tcp:8000
 ```
+
+The bridge listens for Quest controller CSV data on TCP port `8000` and forwards
+the packed controller packet to ManiSkill on UDP `127.0.0.1:9876`.
+
+`--enable-gripper` forwards the Quest controller primary button as a binary grasp
+signal. On the right controller this is the A button. `--grasp-threshold 0.5`
+means values at or above `0.5` are sent as `1.0` grasp, and lower values are sent
+as `0.0` release. `--verbose` prints tracked/grasp status so you can confirm the
+bridge is receiving controller data.
+
+If you only want to test arm pose teleoperation and do not want button presses to
+close the gripper, omit `--enable-gripper`.
 
 `ControllerPoseStreamer.cs` sends the final controller CSV field as a binary
 A/primary-button grasp value: `1.0` when pressed, `0.0` when released.
