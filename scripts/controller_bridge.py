@@ -76,10 +76,10 @@ def _convert_position(ux: float, uy: float, uz: float) -> Tuple[float, float, fl
 def _convert_quaternion(qx: float, qy: float, qz: float, qw: float) -> Tuple[float, float, float, float]:
     """Unity LH Quat -> RH Quat (for ManiSkill simulation).
     
-    NOTE: This mapping is for the ManiSkill SIMULATION. The real Franka
-    bridge uses (-qz, qx, -qy, qw) which accounts for the FR3's frame.
+    This matches the position basis change (x, y, z) -> (z, -x, y).
+    The handedness flip means the quaternion vector components take the
+    opposite signs from the direct axis permutation.
     """
-    # Matches the standard position axis mapping (z, -x, y).
     return (-qz, qx, -qy, qw)
 
 def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
@@ -115,28 +115,49 @@ def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
             except ValueError:
                 continue
 
-        if len(raw_vals) < 8:
+        if len(raw_vals) < 7:
             return None
 
-        # Position (indices 1,2,3 in raw_vals)
-        target.px, target.py, target.pz = _convert_position(raw_vals[1], raw_vals[2], raw_vals[3])
+        # Current Unity ControllerPoseStreamer sends pose-first:
+        #   px, py, pz, qx, qy, qz, qw, padding..., grasp
+        # Older bridge captures include a tracked flag first:
+        #   tracked, px, py, pz, qx, qy, qz, qw, padding..., grasp
+        if len(raw_vals) >= 18:
+            tracked = raw_vals[0] > 0.5
+            pos_offset = 1
+            quat_offset = 4
+        else:
+            tracked = True
+            pos_offset = 0
+            quat_offset = 3
+
+        target.px, target.py, target.pz = _convert_position(
+            raw_vals[pos_offset],
+            raw_vals[pos_offset + 1],
+            raw_vals[pos_offset + 2],
+        )
         
-        # Rotation (indices 4,5,6,7 in raw_vals)
-        target.qx, target.qy, target.qz, target.qw = _convert_quaternion(raw_vals[4], raw_vals[5], raw_vals[6], raw_vals[7])
+        target.qx, target.qy, target.qz, target.qw = _convert_quaternion(
+            raw_vals[quat_offset],
+            raw_vals[quat_offset + 1],
+            raw_vals[quat_offset + 2],
+            raw_vals[quat_offset + 3],
+        )
         
-        # Grasp signal. Keep disabled by default while testing arm teleop:
-        # vr_teleop_node publishes 1.0 - grasp, so forwarding a pressed
-        # Quest button as 1.0 commands a hard close and can fault the run.
+        # Grasp signal. ControllerPoseStreamer sends a binary primary face
+        # button value here: right A, and the matching primary button on left.
+        # Keep disabled by default while testing arm teleop so a button press
+        # cannot accidentally command a hard close.
         if not receiver.enable_gripper:
             target.grasp = 0.0
         elif "wrist" in header:
             # For hands, use the global fist state tracked by FistTracking.cs
             target.grasp = receiver.fist_state
-        elif len(raw_vals) >= 18:
-            # Index breakdown: 0=tracked, 1-3=pos, 4-7=rot, 8-10=fwd, 11-13=up, 14-16=right, 17=button
-            target.grasp = 1.0 if raw_vals[17] > 0.5 else 0.0
+        else:
+            raw_grasp = float(max(0.0, min(1.0, raw_vals[-1])))
+            target.grasp = 1.0 if raw_grasp >= receiver.grasp_threshold else 0.0
         
-        target.tracked = raw_vals[0] > 0.5
+        target.tracked = tracked
         return side
     except Exception as e:
         logging.error("Parse error: %s", e)
@@ -144,11 +165,19 @@ def _parse_line(line: str, receiver: "Receiver") -> Optional[str]:
 
 class Receiver:
     """Manages incoming socket and data state."""
-    def __init__(self, protocol: str, host: str, port: int, enable_gripper: bool = False):
+    def __init__(
+        self,
+        protocol: str,
+        host: str,
+        port: int,
+        enable_gripper: bool = False,
+        grasp_threshold: float = 0.5,
+    ):
         self.protocol = protocol
         self.host = host
         self.port = port
         self.enable_gripper = enable_gripper
+        self.grasp_threshold = grasp_threshold
         self.right = ControllerPose()
         self.left = ControllerPose()
         self.fist_state = 0.0 
@@ -224,8 +253,22 @@ class Receiver:
                 logging.error("TCP Server error: %s", e)
         server.close()
 
-def run_bridge(in_protocol, in_port, out_host, out_port, verbose=False, enable_gripper=False):
-    receiver = Receiver(in_protocol, "0.0.0.0", in_port, enable_gripper=enable_gripper)
+def run_bridge(
+    in_protocol,
+    in_port,
+    out_host,
+    out_port,
+    verbose=False,
+    enable_gripper=False,
+    grasp_threshold=0.5,
+):
+    receiver = Receiver(
+        in_protocol,
+        "0.0.0.0",
+        in_port,
+        enable_gripper=enable_gripper,
+        grasp_threshold=grasp_threshold,
+    )
     t = threading.Thread(target=receiver.run, daemon=True)
     t.start()
 
@@ -233,10 +276,11 @@ def run_bridge(in_protocol, in_port, out_host, out_port, verbose=False, enable_g
     out_addr = (out_host, out_port)
 
     logging.info(
-        "Bridge started. Forwarding to UDP %s:%d. Gripper forwarding: %s",
+        "Bridge started. Forwarding to UDP %s:%d. Gripper forwarding: %s. Grasp threshold: %.2f",
         out_host,
         out_port,
         "enabled" if enable_gripper else "disabled",
+        grasp_threshold,
     )
     
     try:
@@ -278,6 +322,12 @@ def main():
         action="store_true",
         help="Forward Quest button/fist state as gripper close commands. Default keeps gripper open for arm teleop testing.",
     )
+    parser.add_argument(
+        "--grasp-threshold",
+        type=float,
+        default=0.5,
+        help="Controller A/primary-button value at or above this threshold is sent as binary grasp=1.0.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -289,6 +339,7 @@ def main():
         args.out_port,
         args.verbose,
         args.enable_gripper,
+        args.grasp_threshold,
     )
 
 if __name__ == "__main__":

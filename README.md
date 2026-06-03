@@ -89,17 +89,65 @@ What it sends:
 
 Use this when the Quest app is in controller mode:
 
+It forwards a 72-byte little-endian packet:
+
+```text
+<18f, little-endian, 72 bytes>
+
+right_px, right_py, right_pz,
+right_qx, right_qy, right_qz, right_qw,
+right_grasp,
+right_tracked,
+left_px, left_py, left_pz,
+left_qx, left_qy, left_qz, left_qw,
+left_grasp,
+left_tracked
+```
+
+Run this bridge when teleoperating ManiSkill with the Quest controllers. This is
+the standard command:
+
 ```bash
+cd /home/pair/controller_tracking_streamer
+
 python3 scripts/controller_bridge.py \
   --in-protocol tcp \
   --in-port 8000 \
   --out-host 127.0.0.1 \
-  --out-port 9876
+  --out-port 9876 \
+  --enable-gripper \
+  --grasp-threshold 0.5 \
+  --verbose
 ```
+
+Use this with the Quest app set to `TCP Wired`, IP `127.0.0.1`, port `8000`,
+and controller tracking enabled. Before running the bridge over USB, set up ADB
+port forwarding:
+
+```bash
+adb reverse tcp:8000 tcp:8000
+```
+
+The bridge listens for Quest controller CSV data on TCP port `8000` and forwards
+the packed controller packet to ManiSkill on UDP `127.0.0.1:9876`.
+
+`--enable-gripper` forwards the Quest controller primary button as a binary grasp
+signal. On the right controller this is the A button. `--grasp-threshold 0.5`
+means values at or above `0.5` are sent as `1.0` grasp, and lower values are sent
+as `0.0` release. `--verbose` prints tracked/grasp status so you can confirm the
+bridge is receiving controller data.
+
+If you only want to test arm pose teleoperation and do not want button presses to
+close the gripper, omit `--enable-gripper`.
+
+`ControllerPoseStreamer.cs` sends the final controller CSV field as a binary
+A/primary-button grasp value: `1.0` when pressed, `0.0` when released.
 
 ## Debug Commands
 
-Print raw TCP traffic:
+Before connecting ManiSkill, verify that Quest telemetry reaches the host.
+
+TCP:
 
 ```bash
 python3 scripts/sockets.py --protocol tcp --host localhost --port 8000
