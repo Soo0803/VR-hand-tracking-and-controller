@@ -50,7 +50,7 @@ def test_controller_parse_gripper_disabled():
         "0, 0, 0, "  # forward
         "0, 0, 0, "  # up
         "0, 0, 0, "  # right
-        "1"  # button pressed
+        "1"  # A/primary button pressed
     )
 
     parsed = bridge._parse_line(line, receiver)
@@ -61,10 +61,10 @@ def test_controller_parse_gripper_disabled():
         (receiver.right.px, receiver.right.py, receiver.right.pz),
         (0.3, -0.1, 0.2),
     )
-    # Rotation mapping remains the one that matched controller rotation testing.
+    # Rotation mapping follows the ManiSkill bridge packet convention.
     assert_close_tuple(
         (receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw),
-        (-0.6, 0.4, -0.5, 0.7),
+        (0.6, -0.4, 0.5, 0.7),
     )
     # Default safety: pressing the Quest button does not close the gripper.
     assert receiver.right.grasp == 0.0
@@ -93,14 +93,50 @@ def test_packet_contract():
     assert bridge._PACK_SIZE == 72
     assert len(packet) == 72
     assert len(vals) == 18
-    assert_close_tuple(vals[:9], (0.3, -0.1, 0.2, -0.6, 0.4, -0.5, 0.7, 1.0, 1.0))
+    assert_close_tuple(vals[:9], (0.3, -0.1, 0.2, 0.6, -0.4, 0.5, 0.7, 1.0, 1.0))
     assert_close_tuple(vals[9:], (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+
+
+def test_controller_parse_current_unity_pose_first_format():
+    receiver = bridge.Receiver("tcp", "127.0.0.1", 8000, enable_gripper=True)
+    line = (
+        "Right controller:, "
+        "0.1, 0.2, 0.3, "  # position x,y,z
+        "0.4, 0.5, 0.6, 0.7, "  # quaternion x,y,z,w
+        "0, 0, 0, 0, 0, 0, 0, 0, 0, "
+        "0.8"  # A/primary button field
+    )
+
+    parsed = bridge._parse_line(line, receiver)
+
+    assert parsed == "right"
+    assert receiver.right.tracked is True
+    assert_close_tuple((receiver.right.px, receiver.right.py, receiver.right.pz), (0.3, -0.1, 0.2))
+    assert_close_tuple((receiver.right.qx, receiver.right.qy, receiver.right.qz, receiver.right.qw), (0.6, -0.4, 0.5, 0.7))
+    assert receiver.right.grasp == 1.0
+
+
+def test_controller_primary_button_grasp_threshold_binary_output():
+    receiver = bridge.Receiver("tcp", "127.0.0.1", 8000, enable_gripper=True, grasp_threshold=0.5)
+    bridge._parse_line(
+        "Right controller:, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.1",
+        receiver,
+    )
+    assert receiver.right.grasp == 0.0
+
+    bridge._parse_line(
+        "Right controller:, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.5",
+        receiver,
+    )
+    assert receiver.right.grasp == 1.0
 
 
 def main():
     test_controller_parse_gripper_disabled()
     test_controller_parse_gripper_enabled()
     test_packet_contract()
+    test_controller_parse_current_unity_pose_first_format()
+    test_controller_primary_button_grasp_threshold_binary_output()
     print("controller_bridge.py parse and packet contract tests passed")
 
 

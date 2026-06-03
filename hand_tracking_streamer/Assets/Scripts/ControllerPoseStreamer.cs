@@ -62,8 +62,10 @@ public class ControllerPoseStreamer : MonoBehaviour
         Vector3 pos = OVRInput.GetLocalControllerPosition(controller);
         Quaternion rot = OVRInput.GetLocalControllerRotation(controller);
         
-        // Grasp signal: Index Trigger (Analog)
-        float grasp = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller);
+        // Grasp signal: primary face button.
+        // On Quest Touch this is A on the right controller and the matching
+        // primary face button on the left controller.
+        float grasp = OVRInput.Get(OVRInput.Button.One, controller) ? 1f : 0f;
 
         BuildAndSendPacket(pos, rot, grasp);
     }

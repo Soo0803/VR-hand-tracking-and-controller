@@ -20,7 +20,7 @@ tracking mode selected inside the Meta Quest app:
 | Quest app tracking mode | Python bridge to run | Default output port | Use this for |
 | --- | --- | --- | --- |
 | Hand tracking / hand landmarks | `scripts/hand_bridge.py` | `9877` | Wrist pose plus 21 hand landmarks converted into wrist pose and finger curl values |
-| Controller tracking / Quest controllers | `scripts/controller_bridge.py` | `9876` | Left/right Quest controller pose and optional trigger/grasp signal |
+| Controller tracking / Quest controllers | `scripts/controller_bridge.py` | `9876` | Left/right Quest controller pose and optional A/primary-button grasp signal |
 
 If the Quest app is set to a hand mode such as `Both Hands`, `Left Hand Only`, or
 `Right Hand Only`, run `hand_bridge.py`. 
@@ -191,18 +191,16 @@ python3 scripts/controller_bridge.py \
   --out-port 9876
 ```
 
-By default, gripper forwarding is disabled so a Quest trigger press does not command
-a hard close during arm teleop testing. Enable it explicitly only when the downstream
-ManiSkill controller expects the grasp signal:
+By default, gripper forwarding is disabled so a Quest A/primary-button press does
+not command a hard close during arm teleop testing. Enable it explicitly only when
+the downstream ManiSkill controller expects the grasp signal:
 
 ```bash
 python3 scripts/controller_bridge.py --in-protocol tcp --in-port 8000 --out-port 9876 --enable-gripper
 ```
 
-Note: this script documents and tests a controller CSV contract with a leading tracked
-flag before position and quaternion fields. Confirm that `ControllerPoseStreamer.cs`
-emits the same field order before relying on the controller bridge for experiments.
-The hand bridge is the primary working path for this branch.
+`ControllerPoseStreamer.cs` sends the final controller CSV field as a binary
+A/primary-button grasp value: `1.0` when pressed, `0.0` when released.
 
 ## Debugging Raw Streams
 
